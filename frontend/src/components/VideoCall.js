@@ -1,12 +1,14 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import io from "socket.io-client";
 
-const socket = io("wss://rtc.gym-engine.com:3000");
+const socket = io("wss://rtc.gym-engine.com:3000", {
+  transports: ["websocket"], // Make sure to use the WebSocket transport
+});
 
 function VideoCall() {
   const [room, setRoom] = useState("");
   const [message, setMessage] = useState("");
-  const [isDataChannelOpen, setIsDataChannelOpen] = useState(false); 
+  const [isDataChannelOpen, setIsDataChannelOpen] = useState(false);
   const localVideo = useRef(null);
   const remoteVideo = useRef(null);
   const peerConnection = useRef(null);
@@ -30,8 +32,6 @@ function VideoCall() {
       .then((stream) => {
         localVideo.current.srcObject = stream;
         stream.getTracks().forEach((track) => peerConnection.current.addTrack(track, stream));
-
-        // Log local stream
         console.log("Local Stream: ", localVideo.current.srcObject);
       })
       .catch((error) => {
@@ -42,9 +42,7 @@ function VideoCall() {
     // Handle incoming tracks
     peerConnection.current.ontrack = (event) => {
       console.log("Received remote stream:", event);
-
       remoteVideo.current.srcObject = event.streams[0];
-      // Log remote stream
       console.log("Remote Stream: ", remoteVideo.current.srcObject);
     };
 
@@ -92,6 +90,18 @@ function VideoCall() {
       alert("Please wait for the connection to be established.");
     }
   };
+
+  // Cleanup on component unmount
+  useEffect(() => {
+    return () => {
+      if (peerConnection.current) {
+        peerConnection.current.close();
+      }
+      if (dataChannel.current) {
+        dataChannel.current.close();
+      }
+    };
+  }, []);
 
   return (
     <div>
