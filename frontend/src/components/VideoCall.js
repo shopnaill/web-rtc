@@ -23,49 +23,59 @@ function VideoCall() {
   };
 
   const setupWebRTC = () => {
-    const localStream = useRef(null);
+    let localStream = null; // Use a regular variable
 
     const createPeerConnection = (targetId) => {
-      const peerConnection = new RTCPeerConnection();
+        const peerConnection = new RTCPeerConnection();
 
-      // Add local tracks to peer connection
-      localStream.current?.getTracks().forEach((track) =>
-        peerConnection.addTrack(track, localStream.current)
-      );
+        // Add local tracks to peer connection
+        localStream?.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
 
-      // Handle incoming tracks (remote streams)
-      peerConnection.ontrack = (event) => {
-        setRemoteStreams((prevStreams) => [...prevStreams, event.streams[0]]);
-      };
+        // Handle incoming tracks (remote stream)
+        peerConnection.ontrack = (event) => {
+            setRemoteStreams((prevStreams) => [...prevStreams, event.streams[0]]);
+        };
 
-      // Handle ICE candidates
-      peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-          socket.emit("signal", {
-            room,
-            target: targetId,
-            candidate: event.candidate,
-          });
-        }
-      };
+        // ICE candidate handling
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+                socket.emit("signal", {
+                    room,
+                    target: targetId,
+                    candidate: event.candidate,
+                });
+            }
+        };
 
-      return peerConnection;
+        return peerConnection;
     };
 
     // Access local media stream
     navigator.mediaDevices
-      .getUserMedia({ video: true, audio: true })
-      .then((stream) => {
-        localStream.current = stream;
-        if (localVideo.current) {
-          localVideo.current.srcObject = stream;
-        }
-      })
-      .catch((err) => console.error("Error accessing media devices:", err));
+        .getUserMedia({ video: true, audio: true })
+        .then((stream) => {
+            localStream = stream; // Assign to the variable
+            if (localVideo.current) {
+                localVideo.current.srcObject = stream;
+            }
+        })
+        .catch((err) => console.error("Error accessing media devices:", err));
 
-    // Listen for room events
+    // Handle room users
     socket.on("room-users", (users) => {
-      users.forEach(async (userId) => {
+        users.forEach(async (userId) => {
+            const peerConnection = createPeerConnection(userId);
+            peers.current[userId] = peerConnection;
+
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+
+            socket.emit("signal", { room, target: userId, offer });
+        });
+    });
+
+    // Handle user joining
+    socket.on("user-joined", async (userId) => {
         const peerConnection = createPeerConnection(userId);
         peers.current[userId] = peerConnection;
 
@@ -73,56 +83,40 @@ function VideoCall() {
         await peerConnection.setLocalDescription(offer);
 
         socket.emit("signal", { room, target: userId, offer });
-      });
     });
 
-    socket.on("user-joined", async (userId) => {
-      const peerConnection = createPeerConnection(userId);
-      peers.current[userId] = peerConnection;
-
-      const offer = await peerConnection.createOffer();
-      await peerConnection.setLocalDescription(offer);
-
-      socket.emit("signal", { room, target: userId, offer });
-    });
-
+    // Handle signaling
     socket.on("signal", async (data) => {
-      const { sender, offer, answer, candidate } = data;
+        const { sender, offer, answer, candidate } = data;
 
-      if (!peers.current[sender]) {
-        peers.current[sender] = createPeerConnection(sender);
-      }
+        if (!peers.current[sender]) {
+            peers.current[sender] = createPeerConnection(sender);
+        }
 
-      const peerConnection = peers.current[sender];
+        const peerConnection = peers.current[sender];
 
-      if (offer) {
-        await peerConnection.setRemoteDescription(
-          new RTCSessionDescription(offer)
-        );
-        const answer = await peerConnection.createAnswer();
-        await peerConnection.setLocalDescription(answer);
-
-        socket.emit("signal", { room, target: sender, answer });
-      } else if (answer) {
-        await peerConnection.setRemoteDescription(
-          new RTCSessionDescription(answer)
-        );
-      } else if (candidate) {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-      }
+        if (offer) {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            socket.emit("signal", { room, target: sender, answer });
+        } else if (answer) {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        } else if (candidate) {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        }
     });
 
+    // Handle user leaving
     socket.on("user-left", (userId) => {
-      if (peers.current[userId]) {
-        peers.current[userId].close();
-        delete peers.current[userId];
-      }
-      setRemoteStreams((prevStreams) =>
-        prevStreams.filter((_, index) => index !== userId)
-      );
-      console.log(`${userId} left the room`);
+        if (peers.current[userId]) {
+            peers.current[userId].close();
+            delete peers.current[userId];
+        }
+        console.log(`${userId} left the room`);
     });
-  };
+};
+
 
   const sendMessage = () => {
     if (isDataChannelOpen) {
