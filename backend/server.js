@@ -8,7 +8,7 @@ const server = http.createServer(app);
 // Add CORS configuration for Socket.io
 const io = socketIo(server, {
   cors: {
-    origin: "https://rtc.gym-engine.com", // Allow requests from your frontend (change port if needed)
+    origin: "http://localhost:3001", // Allow requests from your frontend (change port if needed)
     methods: ["GET", "POST"],
     allowedHeaders: ["my-custom-header"], // optional, if you have custom headers
     credentials: true, // Optional, if you're dealing with credentials (cookies, etc.)
@@ -53,6 +53,6 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(3000, "rtc.gym-engine.com",() => {
-  console.log("Server is running on https://rtc.gym-engine.com:3000");
+server.listen(3000,() => {
+  console.log("Server is running on http://localhost:3000");
 });
