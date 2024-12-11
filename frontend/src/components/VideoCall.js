@@ -12,7 +12,6 @@ function VideoCall() {
   const peerConnection = useRef(null);
   const dataChannel = useRef(null);
 
-  // Join room and initialize WebRTC
   const joinRoom = () => {
     if (!room) {
       alert("Please enter a room code");
@@ -22,16 +21,18 @@ function VideoCall() {
     setupWebRTC();
   };
 
-  // Set up WebRTC peer connection
   const setupWebRTC = () => {
     peerConnection.current = new RTCPeerConnection();
 
-    // Request media permissions (audio/video)
+    // Get media stream and add to peer connection
     navigator.mediaDevices
       .getUserMedia({ video: true, audio: true })
       .then((stream) => {
         localVideo.current.srcObject = stream;
         stream.getTracks().forEach((track) => peerConnection.current.addTrack(track, stream));
+
+        // Log local stream
+        console.log("Local Stream: ", localVideo.current.srcObject);
       })
       .catch((error) => {
         console.error("Error accessing media devices:", error);
@@ -41,9 +42,11 @@ function VideoCall() {
     // Handle incoming tracks
     peerConnection.current.ontrack = (event) => {
       remoteVideo.current.srcObject = event.streams[0];
+      // Log remote stream
+      console.log("Remote Stream: ", remoteVideo.current.srcObject);
     };
 
-    // Signaling process (Offer, Answer, ICE Candidates)
+    // Handle signaling process (offer, answer, candidate)
     socket.on("signal", async (data) => {
       if (data.offer) {
         await peerConnection.current.setRemoteDescription(data.offer);
@@ -64,7 +67,7 @@ function VideoCall() {
       }
     };
 
-    // Create DataChannel for text messaging
+    // Create DataChannel
     dataChannel.current = peerConnection.current.createDataChannel("chat");
 
     // Handle DataChannel events
@@ -78,7 +81,6 @@ function VideoCall() {
     };
   };
 
-  // Send a text message through DataChannel
   const sendMessage = () => {
     if (isDataChannelOpen) {
       dataChannel.current.send(message);
@@ -89,7 +91,6 @@ function VideoCall() {
     }
   };
 
-  // UI rendering
   return (
     <div>
       <div>
