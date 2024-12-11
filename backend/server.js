@@ -22,44 +22,40 @@ const socketNamespace = io.of("/socket");
 
 // Handle WebSocket connections in the custom namespace
 socketNamespace.on("connection", (socket) => {
-  console.log("A user connected to /socket: ", socket.id);
-
-  // Join a room
-  socket.on("join-room", (roomId) => {
-    socket.join(roomId);
-    console.log(`${socket.id} joined room ${roomId}`);
-    socket.to(roomId).emit("user-joined", socket.id);
-  });
-
-  // Handle signaling messages for WebRTC
-  socket.on("signal", async (data) => {
-    console.log("Received signal:", data);
-    // Make sure peerConnection is initialized in your server logic before this
-    if (data.offer) {
-      await peerConnection.current.setRemoteDescription(data.offer);
-      const answer = await peerConnection.current.createAnswer();
-      await peerConnection.current.setLocalDescription(answer);
-      socket.emit("signal", { room: data.room, answer });
-    } else if (data.answer) {
-      await peerConnection.current.setRemoteDescription(data.answer);
-    } else if (data.candidate) {
-      await peerConnection.current.addIceCandidate(data.candidate);
-    }
-  });
-
-  // Handle text messages
-  socket.on("message", (data) => {
-    socketNamespace.to(data.room).emit("message", data.message);
-  });
-
-  // Disconnect event
-  socket.on("disconnect", () => {
-    console.log("User disconnected from /socket: ", socket.id);
-    socket.rooms.forEach((roomId) => {
-      socket.to(roomId).emit("user-left", socket.id);
+    console.log("A user connected to /socket: ", socket.id);
+  
+    // Join a room
+    socket.on("join-room", (roomId) => {
+      socket.join(roomId);
+      console.log(`${socket.id} joined room ${roomId}`);
+      socket.to(roomId).emit("user-joined", socket.id); // Notify others in the room
+    });
+  
+    // Relay signaling data
+    socket.on("signal", (data) => {
+      console.log("Relaying signal:", data);
+      // Relay the signal to other users in the room
+      socket.to(data.room).emit("signal", {
+        sender: socket.id,
+        ...data,
+      });
+    });
+  
+    // Handle text messages
+    socket.on("message", (data) => {
+      console.log("Relaying message:", data.message);
+      socket.to(data.room).emit("message", data.message);
+    });
+  
+    // Disconnect event
+    socket.on("disconnect", () => {
+      console.log("User disconnected from /socket: ", socket.id);
+      socket.rooms.forEach((roomId) => {
+        socket.to(roomId).emit("user-left", socket.id);
+      });
     });
   });
-});
+  
 
 // Start the server
 server.listen(3000, () => {
