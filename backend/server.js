@@ -27,9 +27,20 @@ io.on("connection", (socket) => {
   });
 
   // Handle signaling messages
-  socket.on("signal", (data) => {
-    socket.to(data.room).emit("signal", data);
+  socket.on("signal", async (data) => {
+    console.log("Received signal:", data);
+    if (data.offer) {
+      await peerConnection.current.setRemoteDescription(data.offer);
+      const answer = await peerConnection.current.createAnswer();
+      await peerConnection.current.setLocalDescription(answer);
+      socket.emit("signal", { room, answer });
+    } else if (data.answer) {
+      await peerConnection.current.setRemoteDescription(data.answer);
+    } else if (data.candidate) {
+      await peerConnection.current.addIceCandidate(data.candidate);
+    }
   });
+  
 
   // Handle text message
   socket.on("message", (data) => {

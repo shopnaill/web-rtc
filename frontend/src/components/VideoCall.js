@@ -41,6 +41,8 @@ function VideoCall() {
 
     // Handle incoming tracks
     peerConnection.current.ontrack = (event) => {
+      console.log("Received remote stream:", event);
+
       remoteVideo.current.srcObject = event.streams[0];
       // Log remote stream
       console.log("Remote Stream: ", remoteVideo.current.srcObject);
