@@ -97,20 +97,20 @@ function VideoCall() {
     
         if (offer) {
             // If we receive an offer, we should set the remote description only if it's not stable
-            if (peerConnection.signalingState !== "stable") {
-                console.warn("Peer connection is not in a stable state, delaying remote description set.");
-                return; // Delay the offer processing if signaling state is not stable
-            }
+            // if (peerConnection.signalingState !== "stable") {
+            //     console.warn("Peer connection is not in a stable state, delaying remote description set.");
+            //     return; // Delay the offer processing if signaling state is not stable
+            // }
     
             await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
             socket.emit("signal", { room, target: sender, answer });
         } else if (answer) {
-            if (peerConnection.signalingState !== "stable") {
-                console.warn("Peer connection is not in a stable state, delaying remote description set.");
-                return; // Delay the answer processing if signaling state is not stable
-            }
+            // if (peerConnection.signalingState !== "stable") {
+            //     console.warn("Peer connection is not in a stable state, delaying remote description set.");
+            //     return; // Delay the answer processing if signaling state is not stable
+            // }
     
             await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
         } else if (candidate) {
