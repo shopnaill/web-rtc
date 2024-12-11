@@ -17,8 +17,12 @@ const io = socketIo(server, {
 
 app.use(express.static("public"));
 
-io.on("connection", (socket) => {
-  console.log("A user connected: ", socket.id);
+// Define a custom namespace or route for WebSocket logic
+const socketNamespace = io.of("/socket");
+
+// Handle WebSocket connections in the custom namespace
+socketNamespace.on("connection", (socket) => {
+  console.log("A user connected to /socket: ", socket.id);
 
   // Join a room
   socket.on("join-room", (roomId) => {
@@ -32,37 +36,32 @@ io.on("connection", (socket) => {
     console.log("Received signal:", data);
     // Make sure peerConnection is initialized in your server logic before this
     if (data.offer) {
-      // Handle offer (server should not directly create peer connections unless you're implementing a signaling server)
       await peerConnection.current.setRemoteDescription(data.offer);
       const answer = await peerConnection.current.createAnswer();
       await peerConnection.current.setLocalDescription(answer);
       socket.emit("signal", { room: data.room, answer });
     } else if (data.answer) {
-      // Handle answer
       await peerConnection.current.setRemoteDescription(data.answer);
     } else if (data.candidate) {
-      // Handle ICE candidate
       await peerConnection.current.addIceCandidate(data.candidate);
     }
   });
 
-  // Handle text message
+  // Handle text messages
   socket.on("message", (data) => {
-    io.to(data.room).emit("message", data.message);
+    socketNamespace.to(data.room).emit("message", data.message);
   });
 
   // Disconnect event
   socket.on("disconnect", () => {
-    console.log("User disconnected: ", socket.id);
-    // Optionally, leave room on disconnect
-    // For room-specific cleanup
+    console.log("User disconnected from /socket: ", socket.id);
     socket.rooms.forEach((roomId) => {
       socket.to(roomId).emit("user-left", socket.id);
     });
   });
 });
 
-// Start the server (change to https if using SSL)
+// Start the server
 server.listen(3000, () => {
   console.log("Server is running on http://localhost:3000");
 });
