@@ -19,40 +19,55 @@ app.use(express.static("public"));
 
 // Define a custom namespace or route for WebSocket logic
 const socketNamespace = io.of("/socket");
+const rooms = {}; // Object to track rooms and their users
 
 // Handle WebSocket connections in the custom namespace
 socketNamespace.on("connection", (socket) => {
     console.log("A user connected to /socket: ", socket.id);
   
-    // Join a room
+    // Handle joining a room
     socket.on("join-room", (roomId) => {
       socket.join(roomId);
+  
+      // Add the user to the room's user list
+      if (!rooms[roomId]) {
+        rooms[roomId] = [];
+      }
+      rooms[roomId].push(socket.id);
+  
       console.log(`${socket.id} joined room ${roomId}`);
-      socket.to(roomId).emit("user-joined", socket.id); // Notify others in the room
+      console.log(`Current users in room ${roomId}:`, rooms[roomId]);
+  
+      // Notify the new user about all existing users in the room
+      const otherUsers = rooms[roomId].filter((id) => id !== socket.id);
+      socket.emit("room-users", otherUsers);
+  
+      // Notify existing users about the new user
+      socket.to(roomId).emit("user-joined", socket.id);
     });
   
     // Relay signaling data
     socket.on("signal", (data) => {
       console.log("Relaying signal:", data);
-      // Relay the signal to other users in the room
-      socket.to(data.room).emit("signal", {
-        sender: socket.id,
-        ...data,
-      });
+      socket.to(data.target).emit("signal", { sender: socket.id, ...data });
     });
   
-    // Handle text messages
-    socket.on("message", (data) => {
-      console.log("Relaying message:", data.message);
-      socket.to(data.room).emit("message", data.message);
-    });
-  
-    // Disconnect event
+    // Handle disconnection
     socket.on("disconnect", () => {
       console.log("User disconnected from /socket: ", socket.id);
-      socket.rooms.forEach((roomId) => {
+  
+      // Remove the user from all rooms they were part of
+      for (const roomId in rooms) {
+        rooms[roomId] = rooms[roomId].filter((id) => id !== socket.id);
+  
+        // Notify remaining users about the disconnection
         socket.to(roomId).emit("user-left", socket.id);
-      });
+  
+        // Delete room if empty
+        if (rooms[roomId].length === 0) {
+          delete rooms[roomId];
+        }
+      }
     });
   });
   

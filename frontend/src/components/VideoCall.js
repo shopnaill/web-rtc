@@ -22,52 +22,104 @@ function VideoCall() {
   };
 
   const setupWebRTC = () => {
-    peerConnection.current = new RTCPeerConnection();
+    const peers = {}; // To manage peer connections with all users
   
+    const createPeerConnection = (targetId) => {
+      const peerConnection = new RTCPeerConnection();
+  
+      // Handle local tracks
+      localStream.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
+  
+      // Handle remote tracks
+      peerConnection.ontrack = (event) => {
+        // Append remote streams to a video element dynamically
+        const remoteVideo = document.createElement("video");
+        remoteVideo.srcObject = event.streams[0];
+        remoteVideo.autoplay = true;
+        document.body.appendChild(remoteVideo);
+      };
+  
+      // Handle ICE candidates
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit("signal", {
+            room,
+            target: targetId,
+            candidate: event.candidate,
+          });
+        }
+      };
+  
+      return peerConnection;
+    };
+  
+    // Setup local media stream
+    let localStream;
     navigator.mediaDevices
       .getUserMedia({ video: true, audio: true })
       .then((stream) => {
-        localVideo.current.srcObject = stream;
-        stream.getTracks().forEach((track) => peerConnection.current.addTrack(track, stream));
+        localStream = stream;
+        const localVideo = document.getElementById("localVideo");
+        localVideo.srcObject = stream;
       })
-      .catch((error) => {
-        console.error("Error accessing media devices:", error);
-        alert("Unable to access media devices. Please check your camera and microphone.");
+      .catch((err) => console.error("Error accessing media devices:", err));
+  
+    // Handle existing users in the room
+    socket.on("room-users", (users) => {
+      users.forEach(async (userId) => {
+        const peerConnection = createPeerConnection(userId);
+        peers[userId] = peerConnection;
+  
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+  
+        socket.emit("signal", { room, target: userId, offer });
       });
+    });
   
-    peerConnection.current.ontrack = (event) => {
-      remoteVideo.current.srcObject = event.streams[0];
-    };
+    // Handle new user joining
+    socket.on("user-joined", async (userId) => {
+      const peerConnection = createPeerConnection(userId);
+      peers[userId] = peerConnection;
   
-    peerConnection.current.onicecandidate = (event) => {
-      if (event.candidate) {
-        socket.emit("signal", { room, candidate: event.candidate });
-      }
-    };
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+  
+      socket.emit("signal", { room, target: userId, offer });
+    });
   
     // Handle signaling messages
     socket.on("signal", async (data) => {
-      if (data.sender === socket.id) return; // Ignore self-sent signals
+      const { sender, offer, answer, candidate } = data;
   
-      if (data.offer) {
-        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.offer));
-        const answer = await peerConnection.current.createAnswer();
-        await peerConnection.current.setLocalDescription(answer);
-        socket.emit("signal", { room, answer });
-      } else if (data.answer) {
-        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.answer));
-      } else if (data.candidate) {
-        await peerConnection.current.addIceCandidate(new RTCIceCandidate(data.candidate));
+      if (!peers[sender]) {
+        peers[sender] = createPeerConnection(sender);
+      }
+  
+      const peerConnection = peers[sender];
+  
+      if (offer) {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        socket.emit("signal", { room, target: sender, answer });
+      } else if (answer) {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+      } else if (candidate) {
+        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
       }
     });
   
-    // When a new user joins, send them an offer
-    socket.on("user-joined", async () => {
-      const offer = await peerConnection.current.createOffer();
-      await peerConnection.current.setLocalDescription(offer);
-      socket.emit("signal", { room, offer });
+    // Handle user leaving
+    socket.on("user-left", (userId) => {
+      if (peers[userId]) {
+        peers[userId].close();
+        delete peers[userId];
+      }
+      console.log(`${userId} left the room`);
     });
   };
+  
   
 
   const sendMessage = () => {
