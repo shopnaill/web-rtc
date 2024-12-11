@@ -1,9 +1,7 @@
 import React, { useRef, useState, useEffect } from "react";
 import io from "socket.io-client";
 
-const socket = io("http://rtc.gym-engine.com:3000", {
-  transports: ["websocket"], // Make sure to use the WebSocket transport
-});
+const socket = io("http://rtc.gym-engine.com:3000");
 
 function VideoCall() {
   const [room, setRoom] = useState("");
