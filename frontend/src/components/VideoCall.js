@@ -1,7 +1,7 @@
 import React, { useRef, useState } from "react";
 import io from "socket.io-client";
 
-const socket = io("http://192.168.8.199:3000");
+const socket = io("https://rtc.gym-engine.com");
 
 function VideoCall() {
   const [room, setRoom] = useState("");
