@@ -88,24 +88,41 @@ function VideoCall() {
     // Handle signaling
     socket.on("signal", async (data) => {
         const { sender, offer, answer, candidate } = data;
-
+    
         if (!peers.current[sender]) {
             peers.current[sender] = createPeerConnection(sender);
         }
-
+    
         const peerConnection = peers.current[sender];
-
+    
         if (offer) {
+            // If we receive an offer, we should set the remote description only if it's not stable
+            if (peerConnection.signalingState !== "stable") {
+                console.warn("Peer connection is not in a stable state, delaying remote description set.");
+                return; // Delay the offer processing if signaling state is not stable
+            }
+    
             await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
             socket.emit("signal", { room, target: sender, answer });
         } else if (answer) {
+            if (peerConnection.signalingState !== "stable") {
+                console.warn("Peer connection is not in a stable state, delaying remote description set.");
+                return; // Delay the answer processing if signaling state is not stable
+            }
+    
             await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
         } else if (candidate) {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            // ICE candidate handling: Add candidate only after the remote description is set
+            if (peerConnection.signalingState === "stable") {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            } else {
+                console.warn("Ignoring ICE candidate because remote description is not set yet.");
+            }
         }
     });
+    
 
     // Handle user leaving
     socket.on("user-left", (userId) => {
