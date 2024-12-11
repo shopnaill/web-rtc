@@ -6,41 +6,44 @@ const socket = io("https://rtc.gym-engine.com");
 function VideoCall() {
   const [room, setRoom] = useState("");
   const [message, setMessage] = useState("");
-  const [isDataChannelOpen, setIsDataChannelOpen] = useState(false); // Track if DataChannel is open
+  const [isDataChannelOpen, setIsDataChannelOpen] = useState(false); 
   const localVideo = useRef(null);
   const remoteVideo = useRef(null);
   const peerConnection = useRef(null);
   const dataChannel = useRef(null);
 
+  // Join room and initialize WebRTC
   const joinRoom = () => {
+    if (!room) {
+      alert("Please enter a room code");
+      return;
+    }
     socket.emit("join-room", room);
     setupWebRTC();
   };
 
+  // Set up WebRTC peer connection
   const setupWebRTC = () => {
     peerConnection.current = new RTCPeerConnection();
 
-    // Add local media stream to peer connection
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        navigator.mediaDevices
-          .getUserMedia({ video: true, audio: true })
-          .then((stream) => {
-            localVideo.current.srcObject = stream;
-            stream.getTracks().forEach((track) => peerConnection.current.addTrack(track, stream));
-          })
-          .catch((error) => {
-            console.error("Error accessing media devices:", error);
-          });
-      } else {
-        console.error("getUserMedia is not supported in this browser.");
-      }
-      
+    // Request media permissions (audio/video)
+    navigator.mediaDevices
+      .getUserMedia({ video: true, audio: true })
+      .then((stream) => {
+        localVideo.current.srcObject = stream;
+        stream.getTracks().forEach((track) => peerConnection.current.addTrack(track, stream));
+      })
+      .catch((error) => {
+        console.error("Error accessing media devices:", error);
+        alert("Unable to access media devices. Please check your camera and microphone.");
+      });
+
     // Handle incoming tracks
     peerConnection.current.ontrack = (event) => {
       remoteVideo.current.srcObject = event.streams[0];
     };
 
-    // Handle signaling messages
+    // Signaling process (Offer, Answer, ICE Candidates)
     socket.on("signal", async (data) => {
       if (data.offer) {
         await peerConnection.current.setRemoteDescription(data.offer);
@@ -61,13 +64,13 @@ function VideoCall() {
       }
     };
 
-    // Create a DataChannel for messaging
+    // Create DataChannel for text messaging
     dataChannel.current = peerConnection.current.createDataChannel("chat");
 
-    // Listen for DataChannel open event and update state
+    // Handle DataChannel events
     dataChannel.current.onopen = () => {
       console.log("DataChannel is open.");
-      setIsDataChannelOpen(true); // Update state when DataChannel is open
+      setIsDataChannelOpen(true);
     };
 
     dataChannel.current.onmessage = (event) => {
@@ -75,7 +78,7 @@ function VideoCall() {
     };
   };
 
-  // Handle sending text messages
+  // Send a text message through DataChannel
   const sendMessage = () => {
     if (isDataChannelOpen) {
       dataChannel.current.send(message);
@@ -86,6 +89,7 @@ function VideoCall() {
     }
   };
 
+  // UI rendering
   return (
     <div>
       <div>
