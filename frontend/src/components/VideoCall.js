@@ -7,6 +7,7 @@ function VideoCall() {
     const [room, setRoom] = useState("");
     const [message, setMessage] = useState("");
     const [isDataChannelOpen, setIsDataChannelOpen] = useState(false);
+    const [remoteStreams, setRemoteStreams] = useState([]); // State for remote streams
     const localVideo = useRef(null);
     const remoteVideo = useRef(null);
     const peerConnection = useRef(null);
@@ -154,11 +155,18 @@ function VideoCall() {
             </div>
 
             <div>
-                <video ref={localVideo} autoPlay muted playsInline />
-                {remoteStreams.map((stream, index) => (
-                    <video key={index} ref={remoteVideo} srcObject={stream} autoPlay playsInline />
-                ))}
-            </div>
+        <video ref={localVideo} autoPlay muted playsInline />
+        {remoteStreams.map((stream, index) => (
+          <video
+            key={index}
+            autoPlay
+            playsInline
+            ref={(el) => {
+              if (el) el.srcObject = stream; // Assign stream dynamically
+            }}
+          />
+        ))}
+      </div>
 
 
             <div>
