@@ -119,60 +119,64 @@ function VideoCall() {
     });
 
     // Handle incoming signals (offers, answers, candidates)
-    socket.on("signal", async (data) => {
-      const { sender, offer, answer, candidate } = data;
+socket.on("signal", async (data) => {
+  const { sender, offer, answer, candidate } = data;
 
-      if (!peers.current[sender]) {
-        peers.current[sender] = createPeerConnection(sender);
+  if (!peers.current[sender]) {
+    peers.current[sender] = createPeerConnection(sender);
+  }
+
+  const peerConnection = peers.current[sender];
+
+  // Handle offer
+  if (offer) {
+    try {
+      if (peerConnection.signalingState === "stable") {
+        // If signaling state is 'stable', set remote description and create an offer
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+        const localOffer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(localOffer);
+        socket.emit("signal", { room, target: sender, offer: localOffer });
+      } else {
+        // Queue the offer if not in 'stable' state
+        offerQueue.current[sender] = offer;
+        console.warn("Offer queued due to signaling state: " + peerConnection.signalingState);
       }
+    } catch (err) {
+      console.error("Error handling offer:", err);
+    }
+  }
 
-      const peerConnection = peers.current[sender];
-
-      // Handle offer
-      if (offer) {
-        if (peerConnection.signalingState === "stable") {
-          try {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            socket.emit("signal", { room, target: sender, answer });
-          } catch (err) {
-            console.error("Error handling offer:", err);
-          }
-        } else {
-          offerQueue.current[sender] = offer;
-          console.warn("Offer queued due to signaling state: " + peerConnection.signalingState);
-        }
+  // Handle answer
+  else if (answer) {
+    try {
+      if (peerConnection.signalingState === "have-remote-description") {
+        // If remote description is already set, set the local description with the answer
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+      } else {
+        console.warn("Ignoring answer due to incorrect signaling state.");
       }
+    } catch (err) {
+      console.error("Error handling answer: ", err);
+    }
+  }
 
-      // Handle answer
-      else if (answer) {
-        try {
-          if (peerConnection.signalingState === "have-remote-description") {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-          } else {
-            console.warn("Ignoring answer due to incorrect signaling state.");
-          }
-        } catch (err) {
-          console.error("Error handling answer: ", err);
-        }
+  // Handle ICE candidate
+  else if (candidate) {
+    try {
+      if (peerConnection.signalingState === "stable" || peerConnection.signalingState === "have-remote-description") {
+        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+      } else {
+        iceCandidateQueue.current[sender] = iceCandidateQueue.current[sender] || [];
+        iceCandidateQueue.current[sender].push(candidate);
+        console.warn("ICE candidate queued, not in stable state.");
       }
+    } catch (err) {
+      console.error("Error handling ICE candidate: ", err);
+    }
+  }
+});
 
-      // Handle ICE candidate
-      else if (candidate) {
-        try {
-          if (peerConnection.signalingState === "stable" || peerConnection.signalingState === "have-remote-description") {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-          } else {
-            iceCandidateQueue.current[sender] = iceCandidateQueue.current[sender] || [];
-            iceCandidateQueue.current[sender].push(candidate);
-            console.warn("ICE candidate queued, not in stable state.");
-          }
-        } catch (err) {
-          console.error("Error handling ICE candidate: ", err);
-        }
-      }
-    });
 
     // Handle user leaving the room
     socket.on("user-left", (userId) => {
