@@ -119,18 +119,18 @@ function VideoCall() {
     });
 
 
-// Global variables for offer and ICE candidate queues
+// Global variables to keep track of offer and ICE candidate queues
 let offerQueue = {};
 let iceCandidateQueue = {};
 
 // Handling incoming signaling messages
 socket.on('signal', async (data) => {
   const { sender, offer, answer, candidate } = data;
-  const peerConnection = peers.current[sender];
+  let peerConnection = peers.current[sender];
 
   if (offer) {
     try {
-      if (peerConnection.signalingState === 'stable') {
+      if (peerConnection && peerConnection.signalingState === 'stable') {
         console.log(`Handling offer from ${sender} - signaling state is stable.`);
         await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
         const localOffer = await peerConnection.createOffer();
@@ -138,7 +138,7 @@ socket.on('signal', async (data) => {
         socket.emit('signal', { room, target: sender, offer: localOffer });
       } else {
         // Queue the offer if the peer connection is not in a stable state
-        console.warn(`Offer from ${sender} queued due to signaling state: ${peerConnection.signalingState}`);
+        console.warn(`Offer from ${sender} queued due to signaling state: ${peerConnection ? peerConnection.signalingState : 'undefined'}`);
         offerQueue[sender] = offer;
       }
     } catch (err) {
@@ -149,7 +149,7 @@ socket.on('signal', async (data) => {
   // Handle answer
   else if (answer) {
     try {
-      if (peerConnection.signalingState === 'have-remote-description') {
+      if (peerConnection && peerConnection.signalingState === 'have-remote-description') {
         console.log(`Setting remote description for answer from ${sender}.`);
         await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
       } else {
@@ -183,7 +183,7 @@ socket.on('signal', async (data) => {
 // Monitor signaling state and process queued offers
 socket.on('signaling-state-changed', async (data) => {
   const { sender, state } = data;
-  const peerConnection = peers.current[sender];
+  let peerConnection = peers.current[sender];
 
   if (state === 'stable') {
     // Process queued offer once signaling state is stable
