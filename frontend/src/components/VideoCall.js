@@ -16,8 +16,8 @@ function VideoCall() {
   const peers = useRef({});
   const dataChannel = useRef(null);
 
-  const offerQueue = useRef({});  // Store offers temporarily when peer connection is not stable
-  const iceCandidateQueue = useRef({});  // Store ICE candidates temporarily when peer connection is not stable
+  const offerQueue = useRef({});
+  const iceCandidateQueue = useRef({});
 
   const joinRoom = () => {
     if (!room) {
@@ -49,7 +49,6 @@ function VideoCall() {
 
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-          // Queue the ICE candidate if peer connection is not stable
           if (peerConnection.iceConnectionState !== "connected" && peerConnection.iceConnectionState !== "completed") {
             iceCandidateQueue.current[targetId] = iceCandidateQueue.current[targetId] || [];
             iceCandidateQueue.current[targetId].push(event.candidate);
@@ -71,7 +70,6 @@ function VideoCall() {
 
       peerConnection.onsignalingstatechange = () => {
         if (peerConnection.signalingState === "stable") {
-          // Process any queued offers or candidates now that the state is stable
           processQueuedOffers(targetId);
           processQueuedIceCandidates(targetId);
         }
@@ -121,46 +119,42 @@ function VideoCall() {
 
       const peerConnection = peers.current[sender];
 
-      // Handle the offer
       if (offer) {
-        if (peerConnection.signalingState === "stable") {
-          try {
+        try {
+          if (peerConnection.signalingState === "stable") {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
             socket.emit("signal", { room, target: sender, answer });
-          } catch (err) {
-            console.error("Error handling offer: ", err);
+          } else {
+            offerQueue.current[sender] = offer;
+            console.warn("Peer connection is not in stable state, offer queued.");
           }
-        } else {
-          // Queue the offer if not in stable state
-          offerQueue.current[sender] = offer;
-          console.warn("Peer connection is not in stable state, offer queued.");
+        } catch (err) {
+          console.error("Error handling offer: ", err);
         }
       }
 
-      // Handle the answer
       else if (answer) {
         try {
-          if (peerConnection.signalingState === "stable") {
+          if (peerConnection.signalingState === "have-remote-description") {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
           } else {
-            console.warn("Peer connection is not in stable state, answer ignored temporarily.");
+            console.warn("Ignoring answer due to incorrect signaling state.");
           }
         } catch (err) {
           console.error("Error handling answer: ", err);
         }
       }
 
-      // Handle ICE candidates
       else if (candidate) {
         try {
-          if (peerConnection.signalingState === "stable") {
+          if (peerConnection.signalingState === "stable" || peerConnection.signalingState === "have-remote-description") {
             await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
           } else {
-            console.warn("Ignoring ICE candidate because remote description is not set yet.");
-            iceCandidateQueue.current[sender] = iceCandidateQueue.current[sender] || []; // Create an array if it doesn't exist
-            iceCandidateQueue.current[sender].push(candidate);  // Add the ICE candidate to the queue
+            iceCandidateQueue.current[sender] = iceCandidateQueue.current[sender] || [];
+            iceCandidateQueue.current[sender].push(candidate);
+            console.warn("ICE candidate queued, not in stable state.");
           }
         } catch (err) {
           console.error("Error handling ICE candidate: ", err);
@@ -209,7 +203,6 @@ function VideoCall() {
     socket.disconnect();
   };
 
-  // Periodically process queued offers and ICE candidates
   useEffect(() => {
     const interval = setInterval(() => {
       Object.keys(peers.current).forEach(peerId => {
@@ -219,7 +212,7 @@ function VideoCall() {
           processQueuedIceCandidates(peerId);
         }
       });
-    }, 500); // Check every 500ms
+    }, 500);
 
     return () => clearInterval(interval);
   }, []);
@@ -227,12 +220,10 @@ function VideoCall() {
   const processQueuedOffers = (peerId) => {
     if (offerQueue.current[peerId]) {
       const queuedOffer = offerQueue.current[peerId];
-      delete offerQueue.current[peerId]; // Remove the queued offer once processed
+      delete offerQueue.current[peerId];
 
       peers.current[peerId].setRemoteDescription(new RTCSessionDescription(queuedOffer))
-        .then(() => {
-          return peers.current[peerId].createAnswer();
-        })
+        .then(() => peers.current[peerId].createAnswer())
         .then(answer => {
           return peers.current[peerId].setLocalDescription(answer);
         })
@@ -251,7 +242,7 @@ function VideoCall() {
         peers.current[peerId].addIceCandidate(new RTCIceCandidate(candidate))
           .catch(err => console.error("Error processing ICE candidate:", err));
       });
-      delete iceCandidateQueue.current[peerId]; // Clear the queued candidates after processing
+      delete iceCandidateQueue.current[peerId];
     }
   };
 
@@ -263,29 +254,24 @@ function VideoCall() {
           type="text"
           value={room}
           onChange={(e) => setRoom(e.target.value)}
-          placeholder="Enter Room Code"
         />
         <button onClick={joinRoom}>Join Room</button>
       </div>
 
       <div>
-        <video ref={localVideo} autoPlay muted playsInline />
-        {remoteStreams.map((stream, index) => (
-          <video
-            key={index}
-            autoPlay
-            playsInline
-            ref={(el) => {
-              if (el) el.srcObject = stream;
-            }}
-          />
-        ))}
+        <button onClick={toggleAudio}>
+          {isMuted ? "Unmute" : "Mute"}
+        </button>
+        <button onClick={toggleVideo}>
+          {isVideoOff ? "Turn Video On" : "Turn Video Off"}
+        </button>
       </div>
 
       <div>
-        <button onClick={toggleAudio}>{isMuted ? "Unmute Audio" : "Mute Audio"}</button>
-        <button onClick={toggleVideo}>{isVideoOff ? "Turn On Video" : "Turn Off Video"}</button>
-        <button onClick={endCall}>End Call</button>
+        <video ref={localVideo} autoPlay muted></video>
+        {remoteStreams.map((stream, index) => (
+          <video key={index} autoPlay playsInline srcObject={stream}></video>
+        ))}
       </div>
 
       <div>
@@ -293,10 +279,11 @@ function VideoCall() {
           type="text"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
-          placeholder="Type a message"
         />
-        <button onClick={sendMessage}>Send</button>
+        <button onClick={sendMessage}>Send Message</button>
       </div>
+
+      <button onClick={endCall}>End Call</button>
     </div>
   );
 }
