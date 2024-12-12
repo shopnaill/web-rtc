@@ -90,27 +90,51 @@ function VideoCall() {
     });
 
     socket.on("signal", async (data) => {
-        const { sender, offer, answer, candidate } = data;
-
-        if (!peers.current[sender]) {
-            peers.current[sender] = createPeerConnection(sender);
-        }
-
-        const peerConnection = peers.current[sender];
-
-        if (offer) {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            socket.emit("signal", { room, target: sender, answer });
-        } else if (answer) {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-        } else if (candidate) {
-            if (peerConnection.signalingState === "stable") {
-                await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-            }
-        }
-    });
+      const { sender, offer, answer, candidate } = data;
+      
+      if (!peers.current[sender]) {
+          peers.current[sender] = createPeerConnection(sender);
+      }
+      
+      const peerConnection = peers.current[sender];
+      
+      if (offer) {
+          try {
+              // Check if signaling state is stable before setting remote description
+              if (peerConnection.signalingState === "stable") {
+                  await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+                  const answer = await peerConnection.createAnswer();
+                  await peerConnection.setLocalDescription(answer);
+                  socket.emit("signal", { room, target: sender, answer });
+              } else {
+                  console.warn("Peer connection is not in stable state, offer ignored temporarily.");
+              }
+          } catch (err) {
+              console.error("Error handling offer: ", err);
+          }
+      } else if (answer) {
+          try {
+              if (peerConnection.signalingState === "stable") {
+                  await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+              } else {
+                  console.warn("Peer connection is not in stable state, answer ignored temporarily.");
+              }
+          } catch (err) {
+              console.error("Error handling answer: ", err);
+          }
+      } else if (candidate) {
+          try {
+              if (peerConnection.signalingState === "stable") {
+                  await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+              } else {
+                  console.warn("Ignoring ICE candidate because remote description is not set yet.");
+              }
+          } catch (err) {
+              console.error("Error handling ICE candidate: ", err);
+          }
+      }
+  });
+  
 
     socket.on("user-left", (userId) => {
         if (peers.current[userId]) {
