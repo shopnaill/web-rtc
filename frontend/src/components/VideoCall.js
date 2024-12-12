@@ -118,22 +118,23 @@ function VideoCall() {
       }
 
       const peerConnection = peers.current[sender];
-
+      // In signal handler
       if (offer) {
-        try {
-          if (peerConnection.signalingState === "stable") {
+        if (peerConnection.signalingState === "stable") {
+          try {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
             socket.emit("signal", { room, target: sender, answer });
-          } else {
-            offerQueue.current[sender] = offer;
-            console.warn("Peer connection is not in stable state, offer queued.");
+          } catch (err) {
+            console.error("Error handling offer:", err);
           }
-        } catch (err) {
-          console.error("Error handling offer: ", err);
+        } else {
+          offerQueue.current[sender] = offer;  // Queue the offer if the state is not stable
+          console.warn("Offer queued due to signaling state: " + peerConnection.signalingState);
         }
       }
+
 
       else if (answer) {
         try {
