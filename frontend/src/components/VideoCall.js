@@ -69,6 +69,14 @@ function VideoCall() {
         }
       };
 
+      peerConnection.onsignalingstatechange = () => {
+        if (peerConnection.signalingState === "stable") {
+          // Process any queued offers or candidates now that the state is stable
+          processQueuedOffers(targetId);
+          processQueuedIceCandidates(targetId);
+        }
+      };
+
       return peerConnection;
     };
 
@@ -205,7 +213,8 @@ function VideoCall() {
   useEffect(() => {
     const interval = setInterval(() => {
       Object.keys(peers.current).forEach(peerId => {
-        if (peers.current[peerId].signalingState === "stable") {
+        const peerConnection = peers.current[peerId];
+        if (peerConnection.signalingState === "stable") {
           processQueuedOffers(peerId);
           processQueuedIceCandidates(peerId);
         }
