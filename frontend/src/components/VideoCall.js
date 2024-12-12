@@ -19,6 +19,14 @@ function VideoCall() {
   const offerQueue = useRef({});
   const iceCandidateQueue = useRef({});
 
+  // Create a new room with a random ID
+  const createRoom = () => {
+    const newRoom = Math.random().toString(36).substring(2, 7); // Generate random room ID
+    setRoom(newRoom);
+    socket.emit("join-room", newRoom);
+    setupWebRTC();
+  };
+
   // Join an existing room
   const joinRoom = () => {
     if (!room) {
@@ -26,14 +34,6 @@ function VideoCall() {
       return;
     }
     socket.emit("join-room", room);
-    setupWebRTC();
-  };
-
-  // Create a new room with a random ID
-  const createRoom = () => {
-    const newRoom = Math.random().toString(36).substring(2, 7); // Generate random room ID
-    setRoom(newRoom);
-    socket.emit("join-room", newRoom);
     setupWebRTC();
   };
 
@@ -55,23 +55,8 @@ function VideoCall() {
 
       // Handle ICE candidates
       peerConnection.onicecandidate = (event) => {
-        if (event.candidate && peerConnection) {
-          if (peerConnection.iceConnectionState !== "connected" && peerConnection.iceConnectionState !== "completed") {
-            iceCandidateQueue.current[targetId] = iceCandidateQueue.current[targetId] || [];
-            iceCandidateQueue.current[targetId].push(event.candidate);
-          } else {
-            socket.emit("signal", { room, target: targetId, candidate: event.candidate });
-          }
-        } else {
-          console.warn(`Peer connection is undefined for target: ${targetId}`);
-        }
-      };
-      
-
-      // Handle state changes in the ICE connection
-      peerConnection.oniceconnectionstatechange = () => {
-        if (peerConnection.iceConnectionState === "failed") {
-          console.error(`ICE connection failed with ${targetId}`);
+        if (event.candidate) {
+          socket.emit("signal", { room, target: targetId, candidate: event.candidate });
         }
       };
 
@@ -80,11 +65,8 @@ function VideoCall() {
         if (peerConnection.signalingState === "stable") {
           processQueuedOffers(targetId);
           processQueuedIceCandidates(targetId);
-        } else {
-          console.warn(`Signaling state is not stable for ${targetId}: ${peerConnection.signalingState}`);
         }
       };
-      
 
       return peerConnection;
     };
@@ -124,84 +106,36 @@ function VideoCall() {
       socket.emit("signal", { room, target: userId, offer });
     });
 
-
-    let peerConnections = {};  // Store peer connections for each peer
-    let offerQueue = {};  // Queue for offers if signaling state is not stable
-    let iceCandidateQueue = {};  // Queue for ICE candidates if peer connection is not ready
-    
-    // Handling incoming signaling messages
+    // Handle incoming signaling messages
     socket.on('signal', async (data) => {
       const { sender, offer, answer, candidate } = data;
-      let peerConnection = peerConnections[sender];
-    
-      if (offer) {
-        try {
-          if (peerConnection && peerConnection.signalingState === 'stable') {
-            console.log(`Handling offer from ${sender} - signaling state is stable.`);
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-            const localOffer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(localOffer);
-            socket.emit('signal', { room, target: sender, offer: localOffer });
-          } else {
-            // Queue the offer if signaling state is not stable
-            console.warn(`Offer from ${sender} queued due to signaling state: ${peerConnection ? peerConnection.signalingState : 'undefined'}`);
-            offerQueue[sender] = offer;
-          }
-        } catch (err) {
-          console.error(`Error handling offer from ${sender}:`, err);
-        }
-      }
-    });
-    
-    
-    // Monitor signaling state and process queued offers and ICE candidates
-    socket.on('signaling-state-changed', async (data) => {
-      const { sender, state } = data;
-      let peerConnection = peerConnections[sender];
-    
-      if (state === 'stable') {
-        // Process queued offer once signaling state is stable
-        if (offerQueue[sender]) {
-          try {
-            const offer = offerQueue[sender];
-            console.log(`Signaling state stable. Processing queued offer from ${sender}.`);
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-            const localOffer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(localOffer);
-            socket.emit('signal', { room, target: sender, offer: localOffer });
-    
-            // Clear the offer from the queue
-            delete offerQueue[sender];
-            console.log(`Offer from ${sender} successfully processed and removed from queue.`);
-          } catch (err) {
-            console.error(`Error processing queued offer from ${sender}:`, err);
-          }
-        }
-    
-        // Process queued ICE candidates if any
-        if (iceCandidateQueue[sender]) {
-          console.log(`Processing queued ICE candidates for ${sender}.`);
-          iceCandidateQueue[sender].forEach(candidate => {
-            try {
-              peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-            } catch (err) {
-              console.error(`Error adding queued ICE candidate for ${sender}:`, err);
-            }
-          });
-          delete iceCandidateQueue[sender];
-        }
-      }
-    });
-    
+      let peerConnection = peers.current[sender];
 
-  // Handle user leaving the room
-socket.on("user-left", (userId) => {
-  if (peers.current[userId]) {
-    peers.current[userId].close();
-    delete peers.current[userId];
-  }
-  console.log(`${userId} left the room`);
-});
+      if (offer) {
+        if (peerConnection && peerConnection.signalingState === 'stable') {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+          const localOffer = await peerConnection.createOffer();
+          await peerConnection.setLocalDescription(localOffer);
+          socket.emit('signal', { room, target: sender, offer: localOffer });
+        } else {
+          offerQueue.current[sender] = offer;
+        }
+      }
+
+      if (candidate) {
+        iceCandidateQueue.current[sender] = iceCandidateQueue.current[sender] || [];
+        iceCandidateQueue.current[sender].push(candidate);
+      }
+    });
+
+    // Handle user leaving the room
+    socket.on("user-left", (userId) => {
+      if (peers.current[userId]) {
+        peers.current[userId].close();
+        delete peers.current[userId];
+      }
+      console.log(`${userId} left the room`);
+    });
   };
 
   // Send a message to the data channel
@@ -240,36 +174,35 @@ socket.on("user-left", (userId) => {
     socket.disconnect();
   };
 
-// Process queued offers manually if needed
-const processQueuedOffers = (peerId) => {
-  if (offerQueue[peerId]) {
-    const queuedOffer = offerQueue[peerId];
-    delete offerQueue[peerId];
+  // Process queued offers manually if needed
+  const processQueuedOffers = (peerId) => {
+    if (offerQueue.current[peerId]) {
+      const queuedOffer = offerQueue.current[peerId];
+      delete offerQueue.current[peerId];
 
-    peers.current[peerId].setRemoteDescription(new RTCSessionDescription(queuedOffer))
-      .then(() => peers.current[peerId].createAnswer())
-      .then(answer => {
-        return peers.current[peerId].setLocalDescription(answer);
-      })
-      .then(() => {
-        socket.emit("signal", { room, target: peerId, answer });
-      })
-      .catch(err => {
-        console.error("Error processing queued offer: ", err);
+      peers.current[peerId].setRemoteDescription(new RTCSessionDescription(queuedOffer))
+        .then(() => peers.current[peerId].createAnswer())
+        .then(answer => {
+          return peers.current[peerId].setLocalDescription(answer);
+        })
+        .then(() => {
+          socket.emit("signal", { room, target: peerId, answer });
+        })
+        .catch(err => {
+          console.error("Error processing queued offer: ", err);
+        });
+    }
+  };
+
+  const processQueuedIceCandidates = (peerId) => {
+    if (iceCandidateQueue.current[peerId]) {
+      iceCandidateQueue.current[peerId].forEach((candidate) => {
+        peers.current[peerId].addIceCandidate(new RTCIceCandidate(candidate))
+          .catch(err => console.error("Error processing ICE candidate:", err));
       });
-  }
-};
-
-const processQueuedIceCandidates = (peerId) => {
-  if (iceCandidateQueue[peerId]) {
-    iceCandidateQueue[peerId].forEach((candidate) => {
-      peers.current[peerId].addIceCandidate(new RTCIceCandidate(candidate))
-        .catch(err => console.error("Error processing ICE candidate:", err));
-    });
-    delete iceCandidateQueue[peerId];
-  }
-};
-
+      delete iceCandidateQueue.current[peerId];
+    }
+  };
 
   return (
     <div>
