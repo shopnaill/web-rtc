@@ -1,8 +1,12 @@
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useCallback } from "react";
 import io from "socket.io-client";
 
 // Initialize the socket connection
-const socket = io("wss://rtc.gym-engine.com/socket");
+const socket = io("wss://rtc.gym-engine.com/socket", {
+  reconnection: true,
+  reconnectionAttempts: 5,
+  reconnectionDelay: 1000
+});
 
 function VideoCall() {
   const [room, setRoom] = useState("");
@@ -16,7 +20,6 @@ function VideoCall() {
   const localStream = useRef(null);
   const peers = useRef({});
   const dataChannels = useRef({});
-  const pendingOffers = useRef({});
 
   const configuration = {
     iceServers: [
@@ -31,30 +34,8 @@ function VideoCall() {
     ]
   };
 
-  // Create a new room with a random ID
-  const createRoom = async () => {
-    const newRoom = Math.random().toString(36).substring(2, 7);
-    setRoom(newRoom);
-    await setupLocalMedia();
-    socket.connect(); // Ensure socket is connected
-    socket.emit("join-room", newRoom);
-    setConnectionStatus("Connecting...");
-  };
-
-  // Join an existing room
-  const joinRoom = async () => {
-    if (!room) {
-      alert("Please enter a room code");
-      return;
-    }
-    await setupLocalMedia();
-    socket.connect(); // Ensure socket is connected
-    socket.emit("join-room", room);
-    setConnectionStatus("Connecting...");
-  };
-
   // Setup local media stream
-  const setupLocalMedia = async () => {
+  const setupLocalMedia = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: !isVideoOff,
@@ -64,14 +45,16 @@ function VideoCall() {
       if (localVideo.current) {
         localVideo.current.srcObject = stream;
       }
+      return stream;
     } catch (err) {
       console.error("Error accessing media devices:", err);
       alert("Could not access camera or microphone");
+      return null;
     }
-  };
+  }, [isVideoOff, isMuted]);
 
   // Create a peer connection
-  const createPeerConnection = (targetId) => {
+  const createPeerConnection = useCallback((targetId) => {
     try {
       const peerConnection = new RTCPeerConnection(configuration);
 
@@ -135,59 +118,21 @@ function VideoCall() {
         }
       };
 
-      // Handle signaling state changes
-      peerConnection.onsignalingstatechange = () => {
-        console.log(`Signaling state: ${peerConnection.signalingState}`);
-        
-        // Process any pending offers when state becomes stable
-        if (peerConnection.signalingState === 'stable' && pendingOffers.current[targetId]) {
-          processPendingOffer(targetId);
-        }
-      };
-
       return peerConnection;
     } catch (error) {
       console.error("Error creating peer connection:", error);
       return null;
     }
-  };
-
-  // Process a pending offer
-  const processPendingOffer = async (targetId) => {
-    const pendingOffer = pendingOffers.current[targetId];
-    if (!pendingOffer) return;
-
-    try {
-      const peerConnection = peers.current[targetId];
-      if (!peerConnection) return;
-
-      // Ensure we're in the right state before setting remote description
-      if (peerConnection.signalingState !== 'stable') {
-        console.log(`Cannot process offer, current state: ${peerConnection.signalingState}`);
-        return;
-      }
-
-      // Set remote description
-      await peerConnection.setRemoteDescription(
-        new RTCSessionDescription(pendingOffer)
-      );
-
-      // Create and send answer
-      const answer = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answer);
-      
-      socket.emit("signal", { room, target: targetId, answer });
-
-      // Clear the pending offer
-      delete pendingOffers.current[targetId];
-    } catch (error) {
-      console.error(`Error processing pending offer for ${targetId}:`, error);
-    }
-  };
+  }, [room]);
 
   // Establish connection with a peer
-  const connectToPeer = async (targetId) => {
+  const connectToPeer = useCallback(async (targetId) => {
     try {
+      // Ensure local stream is ready
+      if (!localStream.current) {
+        await setupLocalMedia();
+      }
+
       // If peer connection already exists, don't create another
       if (peers.current[targetId]) {
         console.log(`Peer connection with ${targetId} already exists`);
@@ -208,7 +153,45 @@ function VideoCall() {
     } catch (error) {
       console.error("Error connecting to peer:", error);
     }
-  };
+  }, [createPeerConnection, setupLocalMedia, room]);
+
+  // Join a room
+  const joinRoom = useCallback(async () => {
+    if (!room) {
+      alert("Please enter a room code");
+      return;
+    }
+
+    try {
+      // Ensure local stream is ready
+      await setupLocalMedia();
+
+      // Connect to socket
+      socket.connect();
+      socket.emit("join-room", room);
+      setConnectionStatus("Connecting...");
+    } catch (error) {
+      console.error("Error joining room:", error);
+    }
+  }, [room, setupLocalMedia]);
+
+  // Create a new room
+  const createRoom = useCallback(async () => {
+    const newRoom = Math.random().toString(36).substring(2, 7);
+    setRoom(newRoom);
+    
+    try {
+      // Ensure local stream is ready
+      await setupLocalMedia();
+
+      // Connect to socket
+      socket.connect();
+      socket.emit("join-room", newRoom);
+      setConnectionStatus("Connecting...");
+    } catch (error) {
+      console.error("Error creating room:", error);
+    }
+  }, [setupLocalMedia]);
 
   // Socket event listeners
   useEffect(() => {
@@ -250,13 +233,6 @@ function VideoCall() {
             peers.current[sender] = peerConnection;
           }
 
-          // If not in stable state, queue the offer
-          if (peerConnection.signalingState !== 'stable') {
-            console.log(`Queueing offer from ${sender}, current state: ${peerConnection.signalingState}`);
-            pendingOffers.current[sender] = offer;
-            return;
-          }
-
           // Set remote description
           await peerConnection.setRemoteDescription(
             new RTCSessionDescription(offer)
@@ -276,12 +252,6 @@ function VideoCall() {
             return;
           }
 
-          // Check signaling state before setting remote description
-          if (peerConnection.signalingState !== 'stable') {
-            console.log(`Cannot set answer, current state: ${peerConnection.signalingState}`);
-            return;
-          }
-
           // Set remote description for the answer
           await peerConnection.setRemoteDescription(
             new RTCSessionDescription(answer)
@@ -295,10 +265,14 @@ function VideoCall() {
             return;
           }
 
-          // Add ICE candidate
-          await peerConnection.addIceCandidate(
-            new RTCIceCandidate(candidate)
-          );
+          // Add ICE candidate if remote description is set
+          if (peerConnection.remoteDescription) {
+            await peerConnection.addIceCandidate(
+              new RTCIceCandidate(candidate)
+            );
+          } else {
+            console.warn(`Candidate received before remote description for ${sender}`);
+          }
         }
       } catch (error) {
         console.error("Error handling signal:", error);
@@ -311,6 +285,7 @@ function VideoCall() {
       if (peers.current[userId]) {
         peers.current[userId].close();
         delete peers.current[userId];
+        delete dataChannels.current[userId];
         
         // Remove remote stream for the left user
         setRemoteStreams((prevStreams) => 
@@ -334,10 +309,10 @@ function VideoCall() {
       socket.off("signal", handleSignal);
       socket.off("user-left", handleUserLeft);
     };
-  }, [room]);
+  }, [room, createPeerConnection, connectToPeer]);
 
   // Toggle audio mute
-  const toggleAudio = () => {
+  const toggleAudio = useCallback(() => {
     setIsMuted((prev) => {
       const newMuteState = !prev;
       localStream.current?.getAudioTracks().forEach((track) => {
@@ -345,10 +320,10 @@ function VideoCall() {
       });
       return newMuteState;
     });
-  };
+  }, []);
 
   // Toggle video on/off
-  const toggleVideo = () => {
+  const toggleVideo = useCallback(() => {
     setIsVideoOff((prev) => {
       const newVideoState = !prev;
       localStream.current?.getVideoTracks().forEach((track) => {
@@ -356,10 +331,10 @@ function VideoCall() {
       });
       return newVideoState;
     });
-  };
+  }, []);
 
   // Send a message via data channel
-  const sendMessage = () => {
+  const sendMessage = useCallback(() => {
     // Send message to all connected peers
     Object.entries(dataChannels.current).forEach(([peerId, channel]) => {
       if (channel.readyState === 'open') {
@@ -367,10 +342,10 @@ function VideoCall() {
       }
     });
     setMessage("");
-  };
+  }, [message]);
 
   // End the video call
-  const endCall = () => {
+  const endCall = useCallback(() => {
     // Close all peer connections
     Object.values(peers.current).forEach((peerConnection) => {
       peerConnection.close();
@@ -388,7 +363,7 @@ function VideoCall() {
     // Disconnect from socket
     socket.emit("user-left", room);
     socket.disconnect();
-  };
+  }, [room]);
 
   return (
     <div className="video-call-container">
