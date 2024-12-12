@@ -19,6 +19,7 @@ function VideoCall() {
   const offerQueue = useRef({});
   const iceCandidateQueue = useRef({});
 
+  // Join an existing room
   const joinRoom = () => {
     if (!room) {
       alert("Please enter a room code");
@@ -28,6 +29,7 @@ function VideoCall() {
     setupWebRTC();
   };
 
+  // Create a new room with a random ID
   const createRoom = () => {
     const newRoom = Math.random().toString(36).substring(2, 7); // Generate random room ID
     setRoom(newRoom);
@@ -35,39 +37,42 @@ function VideoCall() {
     setupWebRTC();
   };
 
+  // Setup WebRTC for the local and remote peers
   const setupWebRTC = () => {
     let localStream = null;
 
+    // Create a new peer connection
     const createPeerConnection = (targetId) => {
       const peerConnection = new RTCPeerConnection();
 
+      // Add local tracks to the peer connection
       localStream?.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
 
+      // When a remote stream is received, add it to the state
       peerConnection.ontrack = (event) => {
         setRemoteStreams((prevStreams) => [...prevStreams, event.streams[0]]);
       };
 
+      // Handle ICE candidates
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
           if (peerConnection.iceConnectionState !== "connected" && peerConnection.iceConnectionState !== "completed") {
             iceCandidateQueue.current[targetId] = iceCandidateQueue.current[targetId] || [];
             iceCandidateQueue.current[targetId].push(event.candidate);
           } else {
-            socket.emit("signal", {
-              room,
-              target: targetId,
-              candidate: event.candidate,
-            });
+            socket.emit("signal", { room, target: targetId, candidate: event.candidate });
           }
         }
       };
 
+      // Handle state changes in the ICE connection
       peerConnection.oniceconnectionstatechange = () => {
         if (peerConnection.iceConnectionState === "failed") {
           console.error(`ICE connection failed with ${targetId}`);
         }
       };
 
+      // Handle signaling state change
       peerConnection.onsignalingstatechange = () => {
         if (peerConnection.signalingState === "stable") {
           processQueuedOffers(targetId);
@@ -78,6 +83,7 @@ function VideoCall() {
       return peerConnection;
     };
 
+    // Get the user's media (audio and video)
     navigator.mediaDevices
       .getUserMedia({ video: !isVideoOff, audio: !isMuted })
       .then((stream) => {
@@ -88,6 +94,7 @@ function VideoCall() {
       })
       .catch((err) => console.error("Error accessing media devices:", err));
 
+    // Listen for room users to connect and establish peer connections
     socket.on("room-users", (users) => {
       users.forEach(async (userId) => {
         const peerConnection = createPeerConnection(userId);
@@ -100,6 +107,7 @@ function VideoCall() {
       });
     });
 
+    // Handle new user joining the room
     socket.on("user-joined", async (userId) => {
       const peerConnection = createPeerConnection(userId);
       peers.current[userId] = peerConnection;
@@ -110,6 +118,7 @@ function VideoCall() {
       socket.emit("signal", { room, target: userId, offer });
     });
 
+    // Handle incoming signals (offers, answers, candidates)
     socket.on("signal", async (data) => {
       const { sender, offer, answer, candidate } = data;
 
@@ -118,7 +127,8 @@ function VideoCall() {
       }
 
       const peerConnection = peers.current[sender];
-      // In signal handler
+
+      // Handle offer
       if (offer) {
         if (peerConnection.signalingState === "stable") {
           try {
@@ -130,12 +140,12 @@ function VideoCall() {
             console.error("Error handling offer:", err);
           }
         } else {
-          offerQueue.current[sender] = offer;  // Queue the offer if the state is not stable
+          offerQueue.current[sender] = offer;
           console.warn("Offer queued due to signaling state: " + peerConnection.signalingState);
         }
       }
 
-
+      // Handle answer
       else if (answer) {
         try {
           if (peerConnection.signalingState === "have-remote-description") {
@@ -148,6 +158,7 @@ function VideoCall() {
         }
       }
 
+      // Handle ICE candidate
       else if (candidate) {
         try {
           if (peerConnection.signalingState === "stable" || peerConnection.signalingState === "have-remote-description") {
@@ -163,6 +174,7 @@ function VideoCall() {
       }
     });
 
+    // Handle user leaving the room
     socket.on("user-left", (userId) => {
       if (peers.current[userId]) {
         peers.current[userId].close();
@@ -172,6 +184,7 @@ function VideoCall() {
     });
   };
 
+  // Send a message to the data channel
   const sendMessage = () => {
     if (isDataChannelOpen) {
       dataChannel.current.send(message);
@@ -182,6 +195,7 @@ function VideoCall() {
     }
   };
 
+  // Toggle audio mute
   const toggleAudio = () => {
     setIsMuted((prev) => !prev);
     localVideo.current.srcObject.getAudioTracks().forEach((track) => {
@@ -189,6 +203,7 @@ function VideoCall() {
     });
   };
 
+  // Toggle video on/off
   const toggleVideo = () => {
     setIsVideoOff((prev) => !prev);
     localVideo.current.srcObject.getVideoTracks().forEach((track) => {
@@ -196,6 +211,7 @@ function VideoCall() {
     });
   };
 
+  // End the video call
   const endCall = () => {
     socket.emit("user-left", room);
     Object.values(peers.current).forEach((peerConnection) =>
@@ -204,20 +220,7 @@ function VideoCall() {
     socket.disconnect();
   };
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      Object.keys(peers.current).forEach(peerId => {
-        const peerConnection = peers.current[peerId];
-        if (peerConnection.signalingState === "stable") {
-          processQueuedOffers(peerId);
-          processQueuedIceCandidates(peerId);
-        }
-      });
-    }, 500);
-
-    return () => clearInterval(interval);
-  }, []);
-
+  // Process queued offers
   const processQueuedOffers = (peerId) => {
     if (offerQueue.current[peerId]) {
       const queuedOffer = offerQueue.current[peerId];
@@ -237,6 +240,7 @@ function VideoCall() {
     }
   };
 
+  // Process queued ICE candidates
   const processQueuedIceCandidates = (peerId) => {
     if (iceCandidateQueue.current[peerId]) {
       iceCandidateQueue.current[peerId].forEach((candidate) => {
