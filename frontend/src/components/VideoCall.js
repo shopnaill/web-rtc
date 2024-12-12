@@ -8,13 +8,15 @@ function VideoCall() {
   const [room, setRoom] = useState("");
   const [message, setMessage] = useState("");
   const [isDataChannelOpen, setIsDataChannelOpen] = useState(false);
-  const [remoteStreams, setRemoteStreams] = useState([]); 
+  const [remoteStreams, setRemoteStreams] = useState([]);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
-  
+
   const localVideo = useRef(null);
-  const peers = useRef({}); 
+  const peers = useRef({});
   const dataChannel = useRef(null);
+
+  const offerQueue = useRef({});  // Store offers temporarily when peer connection is not stable
 
   const joinRoom = () => {
     if (!room) {
@@ -36,50 +38,49 @@ function VideoCall() {
     let localStream = null;
 
     const createPeerConnection = (targetId) => {
-        const peerConnection = new RTCPeerConnection();
+      const peerConnection = new RTCPeerConnection();
 
-        localStream?.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
+      localStream?.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
 
-        peerConnection.ontrack = (event) => {
-            setRemoteStreams((prevStreams) => [...prevStreams, event.streams[0]]);
-        };
+      peerConnection.ontrack = (event) => {
+        setRemoteStreams((prevStreams) => [...prevStreams, event.streams[0]]);
+      };
 
-        peerConnection.onicecandidate = (event) => {
-            if (event.candidate) {
-                socket.emit("signal", {
-                    room,
-                    target: targetId,
-                    candidate: event.candidate,
-                });
-            }
-        };
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit("signal", {
+            room,
+            target: targetId,
+            candidate: event.candidate,
+          });
+        }
+      };
 
-        return peerConnection;
+      peerConnection.onerror = (err) => {
+        console.error(`Peer connection error with ${targetId}:`, err);
+      };
+
+      peerConnection.oniceconnectionstatechange = () => {
+        if (peerConnection.iceConnectionState === "failed") {
+          console.error(`ICE connection failed with ${targetId}`);
+        }
+      };
+
+      return peerConnection;
     };
 
     navigator.mediaDevices
-        .getUserMedia({ video: !isVideoOff, audio: !isMuted })
-        .then((stream) => {
-            localStream = stream;
-            if (localVideo.current) {
-                localVideo.current.srcObject = stream;
-            }
-        })
-        .catch((err) => console.error("Error accessing media devices:", err));
+      .getUserMedia({ video: !isVideoOff, audio: !isMuted })
+      .then((stream) => {
+        localStream = stream;
+        if (localVideo.current) {
+          localVideo.current.srcObject = stream;
+        }
+      })
+      .catch((err) => console.error("Error accessing media devices:", err));
 
     socket.on("room-users", (users) => {
-        users.forEach(async (userId) => {
-            const peerConnection = createPeerConnection(userId);
-            peers.current[userId] = peerConnection;
-
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-
-            socket.emit("signal", { room, target: userId, offer });
-        });
-    });
-
-    socket.on("user-joined", async (userId) => {
+      users.forEach(async (userId) => {
         const peerConnection = createPeerConnection(userId);
         peers.current[userId] = peerConnection;
 
@@ -87,61 +88,81 @@ function VideoCall() {
         await peerConnection.setLocalDescription(offer);
 
         socket.emit("signal", { room, target: userId, offer });
+      });
+    });
+
+    socket.on("user-joined", async (userId) => {
+      const peerConnection = createPeerConnection(userId);
+      peers.current[userId] = peerConnection;
+
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+
+      socket.emit("signal", { room, target: userId, offer });
     });
 
     socket.on("signal", async (data) => {
       const { sender, offer, answer, candidate } = data;
-      
+
       if (!peers.current[sender]) {
-          peers.current[sender] = createPeerConnection(sender);
+        peers.current[sender] = createPeerConnection(sender);
       }
-      
+
       const peerConnection = peers.current[sender];
-      
+
+      // Handle the offer
       if (offer) {
+        if (peerConnection.signalingState === "stable") {
           try {
-              // Check if signaling state is stable before setting remote description
-              if (peerConnection.signalingState === "stable") {
-                  await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-                  const answer = await peerConnection.createAnswer();
-                  await peerConnection.setLocalDescription(answer);
-                  socket.emit("signal", { room, target: sender, answer });
-              } else {
-                  console.warn("Peer connection is not in stable state, offer ignored temporarily.");
-              }
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            socket.emit("signal", { room, target: sender, answer });
           } catch (err) {
-              console.error("Error handling offer: ", err);
+            console.error("Error handling offer: ", err);
           }
-      } else if (answer) {
-          try {
-              if (peerConnection.signalingState === "stable") {
-                  await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-              } else {
-                  console.warn("Peer connection is not in stable state, answer ignored temporarily.");
-              }
-          } catch (err) {
-              console.error("Error handling answer: ", err);
-          }
-      } else if (candidate) {
-          try {
-              if (peerConnection.signalingState === "stable") {
-                  await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-              } else {
-                  console.warn("Ignoring ICE candidate because remote description is not set yet.");
-              }
-          } catch (err) {
-              console.error("Error handling ICE candidate: ", err);
-          }
+        } else {
+          // Queue the offer if not in stable state
+          offerQueue.current[sender] = offer;
+          console.warn("Peer connection is not in stable state, offer queued.");
+        }
       }
-  });
-  
+
+      // Handle the answer
+      else if (answer) {
+        try {
+          if (peerConnection.signalingState === "stable") {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+          } else {
+            console.warn("Peer connection is not in stable state, answer ignored temporarily.");
+          }
+        } catch (err) {
+          console.error("Error handling answer: ", err);
+        }
+      }
+
+      // Handle ICE candidates
+      else if (candidate) {
+        try {
+          if (peerConnection.signalingState === "stable") {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+          } else {
+            console.warn("Ignoring ICE candidate because remote description is not set yet.");
+            offerQueue.current[sender] = offerQueue.current[sender] || []; // Create an array if it doesn't exist
+            offerQueue.current[sender].push(candidate);  // Add the ICE candidate to the queue
+          }
+        } catch (err) {
+          console.error("Error handling ICE candidate: ", err);
+        }
+      }
+    });
 
     socket.on("user-left", (userId) => {
-        if (peers.current[userId]) {
-            peers.current[userId].close();
-            delete peers.current[userId];
-        }
-        console.log(`${userId} left the room`);
+      if (peers.current[userId]) {
+        peers.current[userId].close();
+        delete peers.current[userId];
+      }
+      console.log(`${userId} left the room`);
     });
   };
 
@@ -177,14 +198,40 @@ function VideoCall() {
     socket.disconnect();
   };
 
+  // Periodically process queued offers
   useEffect(() => {
-    return () => {
-      Object.values(peers.current).forEach((peerConnection) =>
-        peerConnection.close()
-      );
-      socket.disconnect();
-    };
+    const interval = setInterval(() => {
+      Object.keys(peers.current).forEach(peerId => {
+        if (peers.current[peerId].signalingState === "stable" && offerQueue.current[peerId]) {
+          processQueuedOffers(peerId);
+        }
+      });
+    }, 500); // Check every 500ms
+
+    return () => clearInterval(interval);
   }, []);
+
+  const processQueuedOffers = (peerId) => {
+    if (offerQueue.current[peerId] && peers.current[peerId].signalingState === "stable") {
+      const queuedOffer = offerQueue.current[peerId];
+      delete offerQueue.current[peerId]; // Remove the queued offer once processed
+
+      // Process the offer once stable
+      peers.current[peerId].setRemoteDescription(new RTCSessionDescription(queuedOffer))
+        .then(() => {
+          return peers.current[peerId].createAnswer();
+        })
+        .then(answer => {
+          return peers.current[peerId].setLocalDescription(answer);
+        })
+        .then(() => {
+          socket.emit("signal", { room, target: peerId, answer });
+        })
+        .catch(err => {
+          console.error("Error processing queued offer: ", err);
+        });
+    }
+  };
 
   return (
     <div>
