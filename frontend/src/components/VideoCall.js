@@ -17,6 +17,7 @@ function VideoCall() {
   const dataChannel = useRef(null);
 
   const offerQueue = useRef({});  // Store offers temporarily when peer connection is not stable
+  const iceCandidateQueue = useRef({});  // Store ICE candidates temporarily when peer connection is not stable
 
   const joinRoom = () => {
     if (!room) {
@@ -48,16 +49,18 @@ function VideoCall() {
 
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-          socket.emit("signal", {
-            room,
-            target: targetId,
-            candidate: event.candidate,
-          });
+          // Queue the ICE candidate if peer connection is not stable
+          if (peerConnection.iceConnectionState !== "connected" && peerConnection.iceConnectionState !== "completed") {
+            iceCandidateQueue.current[targetId] = iceCandidateQueue.current[targetId] || [];
+            iceCandidateQueue.current[targetId].push(event.candidate);
+          } else {
+            socket.emit("signal", {
+              room,
+              target: targetId,
+              candidate: event.candidate,
+            });
+          }
         }
-      };
-
-      peerConnection.onerror = (err) => {
-        console.error(`Peer connection error with ${targetId}:`, err);
       };
 
       peerConnection.oniceconnectionstatechange = () => {
@@ -148,8 +151,8 @@ function VideoCall() {
             await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
           } else {
             console.warn("Ignoring ICE candidate because remote description is not set yet.");
-            offerQueue.current[sender] = offerQueue.current[sender] || []; // Create an array if it doesn't exist
-            offerQueue.current[sender].push(candidate);  // Add the ICE candidate to the queue
+            iceCandidateQueue.current[sender] = iceCandidateQueue.current[sender] || []; // Create an array if it doesn't exist
+            iceCandidateQueue.current[sender].push(candidate);  // Add the ICE candidate to the queue
           }
         } catch (err) {
           console.error("Error handling ICE candidate: ", err);
@@ -198,12 +201,13 @@ function VideoCall() {
     socket.disconnect();
   };
 
-  // Periodically process queued offers
+  // Periodically process queued offers and ICE candidates
   useEffect(() => {
     const interval = setInterval(() => {
       Object.keys(peers.current).forEach(peerId => {
-        if (peers.current[peerId].signalingState === "stable" && offerQueue.current[peerId]) {
+        if (peers.current[peerId].signalingState === "stable") {
           processQueuedOffers(peerId);
+          processQueuedIceCandidates(peerId);
         }
       });
     }, 500); // Check every 500ms
@@ -212,11 +216,10 @@ function VideoCall() {
   }, []);
 
   const processQueuedOffers = (peerId) => {
-    if (offerQueue.current[peerId] && peers.current[peerId].signalingState === "stable") {
+    if (offerQueue.current[peerId]) {
       const queuedOffer = offerQueue.current[peerId];
       delete offerQueue.current[peerId]; // Remove the queued offer once processed
 
-      // Process the offer once stable
       peers.current[peerId].setRemoteDescription(new RTCSessionDescription(queuedOffer))
         .then(() => {
           return peers.current[peerId].createAnswer();
@@ -230,6 +233,16 @@ function VideoCall() {
         .catch(err => {
           console.error("Error processing queued offer: ", err);
         });
+    }
+  };
+
+  const processQueuedIceCandidates = (peerId) => {
+    if (iceCandidateQueue.current[peerId]) {
+      iceCandidateQueue.current[peerId].forEach((candidate) => {
+        peers.current[peerId].addIceCandidate(new RTCIceCandidate(candidate))
+          .catch(err => console.error("Error processing ICE candidate:", err));
+      });
+      delete iceCandidateQueue.current[peerId]; // Clear the queued candidates after processing
     }
   };
 
