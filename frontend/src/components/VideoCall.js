@@ -15,6 +15,7 @@ function VideoCall() {
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState("Disconnected");
+  const [localVideoReady, setLocalVideoReady] = useState(false);
 
   const localVideo = useRef(null);
   const localStream = useRef(null);
@@ -44,6 +45,10 @@ function VideoCall() {
       localStream.current = stream;
       if (localVideo.current) {
         localVideo.current.srcObject = stream;
+        localVideo.current.onloadedmetadata = () => {
+          localVideo.current.play();
+          setLocalVideoReady(true);
+        };
       }
       return stream;
     } catch (err) {
@@ -56,6 +61,11 @@ function VideoCall() {
   // Create a peer connection
   const createPeerConnection = useCallback((targetId) => {
     try {
+      // Close existing peer connection if it exists
+      if (peers.current[targetId]) {
+        peers.current[targetId].close();
+      }
+
       const peerConnection = new RTCPeerConnection(configuration);
 
       // Add local tracks to the peer connection
@@ -113,7 +123,10 @@ function VideoCall() {
             break;
           case "disconnected":
           case "failed":
+          case "closed":
             setConnectionStatus("Disconnected");
+            delete peers.current[targetId];
+            delete dataChannels.current[targetId];
             break;
         }
       };
@@ -133,10 +146,9 @@ function VideoCall() {
         await setupLocalMedia();
       }
 
-      // If peer connection already exists, don't create another
+      // If peer connection already exists, close it first
       if (peers.current[targetId]) {
-        console.log(`Peer connection with ${targetId} already exists`);
-        return;
+        peers.current[targetId].close();
       }
 
       const peerConnection = createPeerConnection(targetId);
@@ -233,6 +245,11 @@ function VideoCall() {
             peers.current[sender] = peerConnection;
           }
 
+          // Ensure local stream is ready before setting remote description
+          if (!localStream.current) {
+            await setupLocalMedia();
+          }
+
           // Set remote description
           await peerConnection.setRemoteDescription(
             new RTCSessionDescription(offer)
@@ -248,8 +265,14 @@ function VideoCall() {
         if (answer) {
           // Ensure peer connection exists
           if (!peerConnection) {
-            console.error(`No peer connection for ${sender} when receiving answer`);
-            return;
+            console.warn(`Creating new peer connection for answer from ${sender}`);
+            peerConnection = createPeerConnection(sender);
+            peers.current[sender] = peerConnection;
+          }
+
+          // Reset to stable state if needed
+          if (peerConnection.signalingState !== 'stable') {
+            await peerConnection.setLocalDescription(null);
           }
 
           // Set remote description for the answer
@@ -261,17 +284,18 @@ function VideoCall() {
         // Handle ICE candidate
         if (candidate) {
           if (!peerConnection) {
-            console.error(`No peer connection for ${sender} when receiving candidate`);
-            return;
+            console.warn(`Creating new peer connection for candidate from ${sender}`);
+            peerConnection = createPeerConnection(sender);
+            peers.current[sender] = peerConnection;
           }
 
-          // Add ICE candidate if remote description is set
-          if (peerConnection.remoteDescription) {
+          // Add ICE candidate
+          try {
             await peerConnection.addIceCandidate(
               new RTCIceCandidate(candidate)
             );
-          } else {
-            console.warn(`Candidate received before remote description for ${sender}`);
+          } catch (candidateError) {
+            console.warn(`Failed to add ICE candidate: ${candidateError}`);
           }
         }
       } catch (error) {
@@ -309,7 +333,7 @@ function VideoCall() {
       socket.off("signal", handleSignal);
       socket.off("user-left", handleUserLeft);
     };
-  }, [room, createPeerConnection, connectToPeer]);
+  }, [room, createPeerConnection, connectToPeer, setupLocalMedia]);
 
   // Toggle audio mute
   const toggleAudio = useCallback(() => {
@@ -359,9 +383,10 @@ function VideoCall() {
     peers.current = {};
     dataChannels.current = {};
     setConnectionStatus("Disconnected");
+    setLocalVideoReady(false);
 
     // Disconnect from socket
-    socket.emit("user-left", room);
+    socket.emit("leave-room", room);
     socket.disconnect();
   }, [room]);
 
@@ -389,15 +414,18 @@ function VideoCall() {
       </div>
 
       <div className="video-grid">
-        <div className="local-video">
-          <video 
-            ref={localVideo} 
-            autoPlay 
-            muted 
-            style={{ width: '200px', border: '1px solid black' }}
-          />
-          <span>Local Video</span>
-        </div>
+        {localVideoReady && (
+          <div className="local-video">
+            <video 
+              ref={localVideo} 
+              autoPlay 
+              muted 
+              playsInline
+              style={{ width: '200px', border: '1px solid black' }}
+            />
+            <span>Local Video</span>
+          </div>
+        )}
 
         {remoteStreams.map((stream, index) => (
           <div key={stream.id} className="remote-video">
