@@ -7,201 +7,275 @@ const socket = io("wss://rtc.gym-engine.com/socket");
 function VideoCall() {
   const [room, setRoom] = useState("");
   const [message, setMessage] = useState("");
-  const [isDataChannelOpen, setIsDataChannelOpen] = useState(false);
   const [remoteStreams, setRemoteStreams] = useState([]);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
 
   const localVideo = useRef(null);
+  const localStream = useRef(null);
   const peers = useRef({});
-  const dataChannel = useRef(null);
+  const dataChannels = useRef({});
 
-  const offerQueue = useRef({});
-  const iceCandidateQueue = useRef({});
+  const configuration = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      // Add TURN servers if needed for better connectivity
+      // { 
+      //   urls: 'turn:your-turn-server.com', 
+      //   username: 'your-username', 
+      //   credential: 'your-password' 
+      // }
+    ]
+  };
 
   // Create a new room with a random ID
-  const createRoom = () => {
-    const newRoom = Math.random().toString(36).substring(2, 7); // Generate random room ID
+  const createRoom = async () => {
+    const newRoom = Math.random().toString(36).substring(2, 7);
     setRoom(newRoom);
+    await setupLocalMedia();
     socket.emit("join-room", newRoom);
-    setupWebRTC();
   };
 
   // Join an existing room
-  const joinRoom = () => {
+  const joinRoom = async () => {
     if (!room) {
       alert("Please enter a room code");
       return;
     }
+    await setupLocalMedia();
     socket.emit("join-room", room);
-    setupWebRTC();
   };
 
-  // Setup WebRTC for the local and remote peers
-  const setupWebRTC = () => {
-    let localStream = null;
+  // Setup local media stream
+  const setupLocalMedia = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: !isVideoOff,
+        audio: !isMuted
+      });
+      localStream.current = stream;
+      if (localVideo.current) {
+        localVideo.current.srcObject = stream;
+      }
+    } catch (err) {
+      console.error("Error accessing media devices:", err);
+      alert("Could not access camera or microphone");
+    }
+  };
 
-    // Create a new peer connection
-    const createPeerConnection = (targetId) => {
-      const peerConnection = new RTCPeerConnection();
+  // Create a peer connection
+  const createPeerConnection = (targetId) => {
+    try {
+      const peerConnection = new RTCPeerConnection(configuration);
 
       // Add local tracks to the peer connection
-      localStream?.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
+      localStream.current?.getTracks().forEach((track) => {
+        peerConnection.addTrack(track, localStream.current);
+      });
 
-      // When a remote stream is received, add it to the state
+      // Create data channel
+      const dataChannel = peerConnection.createDataChannel("chat");
+      dataChannel.onopen = () => {
+        console.log(`Data channel opened with ${targetId}`);
+      };
+      dataChannel.onmessage = (event) => {
+        console.log(`Message from ${targetId}:`, event.data);
+        // Handle received messages as needed
+      };
+      dataChannels.current[targetId] = dataChannel;
+
+      // Handle remote tracks
       peerConnection.ontrack = (event) => {
-        setRemoteStreams((prevStreams) => [...prevStreams, event.streams[0]]);
+        setRemoteStreams((prevStreams) => {
+          // Avoid adding duplicate streams
+          const isNewStream = !prevStreams.some(
+            (stream) => stream.id === event.streams[0].id
+          );
+          return isNewStream 
+            ? [...prevStreams, event.streams[0]] 
+            : prevStreams;
+        });
       };
 
       // Handle ICE candidates
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-          socket.emit("signal", { room, target: targetId, candidate: event.candidate });
-        }
-      };
-
-      // Handle signaling state change
-      peerConnection.onsignalingstatechange = () => {
-        if (peerConnection.signalingState === "stable") {
-          processQueuedOffers(targetId);
-          processQueuedIceCandidates(targetId);
+          socket.emit("signal", { 
+            room, 
+            target: targetId, 
+            candidate: event.candidate 
+          });
         }
       };
 
       return peerConnection;
-    };
-
-    // Get the user's media (audio and video)
-    navigator.mediaDevices
-      .getUserMedia({ video: !isVideoOff, audio: !isMuted })
-      .then((stream) => {
-        localStream = stream;
-        if (localVideo.current) {
-          localVideo.current.srcObject = stream;
-        }
-      })
-      .catch((err) => console.error("Error accessing media devices:", err));
-
-    // Listen for room users to connect and establish peer connections
-    socket.on("room-users", (users) => {
-      users.forEach(async (userId) => {
-        const peerConnection = createPeerConnection(userId);
-        peers.current[userId] = peerConnection;
-
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-
-        socket.emit("signal", { room, target: userId, offer });
-      });
-    });
-
-    // Handle new user joining the room
-    socket.on("user-joined", async (userId) => {
-      const peerConnection = createPeerConnection(userId);
-      peers.current[userId] = peerConnection;
-
-      const offer = await peerConnection.createOffer();
-      await peerConnection.setLocalDescription(offer);
-
-      socket.emit("signal", { room, target: userId, offer });
-    });
-
-    // Handle incoming signaling messages
-    socket.on('signal', async (data) => {
-      const { sender, offer, answer, candidate } = data;
-      let peerConnection = peers.current[sender];
-
-      if (offer) {
-        if (peerConnection && peerConnection.signalingState === 'stable') {
-          await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-          const localOffer = await peerConnection.createOffer();
-          await peerConnection.setLocalDescription(localOffer);
-          socket.emit('signal', { room, target: sender, offer: localOffer });
-        } else {
-          offerQueue.current[sender] = offer;
-        }
-      }
-
-      if (candidate) {
-        iceCandidateQueue.current[sender] = iceCandidateQueue.current[sender] || [];
-        iceCandidateQueue.current[sender].push(candidate);
-      }
-    });
-
-    // Handle user leaving the room
-    socket.on("user-left", (userId) => {
-      if (peers.current[userId]) {
-        peers.current[userId].close();
-        delete peers.current[userId];
-      }
-      console.log(`${userId} left the room`);
-    });
-  };
-
-  // Send a message to the data channel
-  const sendMessage = () => {
-    if (isDataChannelOpen) {
-      dataChannel.current.send(message);
-      setMessage("");
-    } else {
-      console.error("DataChannel is not open. Cannot send message.");
-      alert("Please wait for the connection to be established.");
+    } catch (error) {
+      console.error("Error creating peer connection:", error);
+      return null;
     }
   };
 
+  // Establish connection with a peer
+  const connectToPeer = async (targetId) => {
+    try {
+      const peerConnection = createPeerConnection(targetId);
+      if (!peerConnection) return;
+
+      peers.current[targetId] = peerConnection;
+
+      // Create offer
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+
+      // Send offer to the target
+      socket.emit("signal", { room, target: targetId, offer });
+    } catch (error) {
+      console.error("Error connecting to peer:", error);
+    }
+  };
+
+  // Socket event listeners
+  useEffect(() => {
+    // Listen for room users
+    const handleRoomUsers = (users) => {
+      users.forEach((userId) => {
+        if (!peers.current[userId]) {
+          connectToPeer(userId);
+        }
+      });
+    };
+
+    // Handle new user joining
+    const handleUserJoined = (userId) => {
+      if (!peers.current[userId]) {
+        connectToPeer(userId);
+      }
+    };
+
+    // Handle signaling messages
+    const handleSignal = async (data) => {
+      const { sender, offer, answer, candidate } = data;
+      let peerConnection = peers.current[sender];
+
+      try {
+        if (offer) {
+          // If no existing peer connection, create one
+          if (!peerConnection) {
+            peerConnection = createPeerConnection(sender);
+            peers.current[sender] = peerConnection;
+          }
+
+          // Set remote description
+          await peerConnection.setRemoteDescription(
+            new RTCSessionDescription(offer)
+          );
+
+          // Create and send answer
+          const answer = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answer);
+          socket.emit("signal", { room, target: sender, answer });
+        }
+
+        if (answer) {
+          // Set remote description for the answer
+          await peerConnection.setRemoteDescription(
+            new RTCSessionDescription(answer)
+          );
+        }
+
+        if (candidate) {
+          // Add ICE candidate
+          await peerConnection.addIceCandidate(
+            new RTCIceCandidate(candidate)
+          );
+        }
+      } catch (error) {
+        console.error("Error handling signal:", error);
+      }
+    };
+
+    // Handle user leaving
+    const handleUserLeft = (userId) => {
+      if (peers.current[userId]) {
+        peers.current[userId].close();
+        delete peers.current[userId];
+        
+        // Remove remote stream for the left user
+        setRemoteStreams((prevStreams) => 
+          prevStreams.filter((stream) => 
+            stream.id !== userId
+          )
+        );
+      }
+    };
+
+    // Add socket listeners
+    socket.on("room-users", handleRoomUsers);
+    socket.on("user-joined", handleUserJoined);
+    socket.on("signal", handleSignal);
+    socket.on("user-left", handleUserLeft);
+
+    // Cleanup listeners on unmount
+    return () => {
+      socket.off("room-users", handleRoomUsers);
+      socket.off("user-joined", handleUserJoined);
+      socket.off("signal", handleSignal);
+      socket.off("user-left", handleUserLeft);
+    };
+  }, [room]);
+
   // Toggle audio mute
   const toggleAudio = () => {
-    setIsMuted((prev) => !prev);
-    localVideo.current.srcObject.getAudioTracks().forEach((track) => {
-      track.enabled = !track.enabled;
+    setIsMuted((prev) => {
+      const newMuteState = !prev;
+      localStream.current?.getAudioTracks().forEach((track) => {
+        track.enabled = !newMuteState;
+      });
+      return newMuteState;
     });
   };
 
   // Toggle video on/off
   const toggleVideo = () => {
-    setIsVideoOff((prev) => !prev);
-    localVideo.current.srcObject.getVideoTracks().forEach((track) => {
-      track.enabled = !track.enabled;
+    setIsVideoOff((prev) => {
+      const newVideoState = !prev;
+      localStream.current?.getVideoTracks().forEach((track) => {
+        track.enabled = !newVideoState;
+      });
+      return newVideoState;
     });
+  };
+
+  // Send a message via data channel
+  const sendMessage = () => {
+    // Send message to all connected peers
+    Object.values(dataChannels.current).forEach((channel) => {
+      if (channel.readyState === 'open') {
+        channel.send(message);
+      }
+    });
+    setMessage("");
   };
 
   // End the video call
   const endCall = () => {
+    // Close all peer connections
+    Object.values(peers.current).forEach((peerConnection) => {
+      peerConnection.close();
+    });
+
+    // Stop local media tracks
+    localStream.current?.getTracks().forEach((track) => track.stop());
+
+    // Reset state
+    setRemoteStreams([]);
+    peers.current = {};
+    dataChannels.current = {};
+
+    // Disconnect from socket
     socket.emit("user-left", room);
-    Object.values(peers.current).forEach((peerConnection) =>
-      peerConnection.close()
-    );
     socket.disconnect();
-  };
-
-  // Process queued offers manually if needed
-  const processQueuedOffers = (peerId) => {
-    if (offerQueue.current[peerId]) {
-      const queuedOffer = offerQueue.current[peerId];
-      delete offerQueue.current[peerId];
-
-      peers.current[peerId].setRemoteDescription(new RTCSessionDescription(queuedOffer))
-        .then(() => peers.current[peerId].createAnswer())
-        .then(answer => {
-          return peers.current[peerId].setLocalDescription(answer);
-        })
-        .then(() => {
-          socket.emit("signal", { room, target: peerId, answer });
-        })
-        .catch(err => {
-          console.error("Error processing queued offer: ", err);
-        });
-    }
-  };
-
-  const processQueuedIceCandidates = (peerId) => {
-    if (iceCandidateQueue.current[peerId]) {
-      iceCandidateQueue.current[peerId].forEach((candidate) => {
-        peers.current[peerId].addIceCandidate(new RTCIceCandidate(candidate))
-          .catch(err => console.error("Error processing ICE candidate:", err));
-      });
-      delete iceCandidateQueue.current[peerId];
-    }
   };
 
   return (
@@ -212,6 +286,7 @@ function VideoCall() {
           type="text"
           value={room}
           onChange={(e) => setRoom(e.target.value)}
+          placeholder="Room Code"
         />
         <button onClick={joinRoom}>Join Room</button>
       </div>
@@ -226,9 +301,20 @@ function VideoCall() {
       </div>
 
       <div>
-        <video ref={localVideo} autoPlay muted></video>
+        <video 
+          ref={localVideo} 
+          autoPlay 
+          muted 
+          style={{ width: '200px', border: '1px solid black' }}
+        ></video>
         {remoteStreams.map((stream, index) => (
-          <video key={index} autoPlay playsInline srcObject={stream}></video>
+          <video 
+            key={stream.id} 
+            srcObject={stream} 
+            autoPlay 
+            playsInline
+            style={{ width: '200px', border: '1px solid black' }}
+          ></video>
         ))}
       </div>
 
@@ -237,6 +323,7 @@ function VideoCall() {
           type="text"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
+          placeholder="Type a message"
         />
         <button onClick={sendMessage}>Send Message</button>
       </div>
