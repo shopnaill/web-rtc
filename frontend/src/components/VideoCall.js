@@ -118,144 +118,76 @@ function VideoCall() {
       socket.emit("signal", { room, target: userId, offer });
     });
 
-// Handle incoming signals (offers, answers, candidates)
-socket.on("signal", async (data) => {
+
+    // Global variable to keep track of queued offers
+let offerQueue = {};
+// Handling incoming signaling messages
+socket.on('signal', async (data) => {
   const { sender, offer, answer, candidate } = data;
-
-  if (!peers.current[sender]) {
-    peers.current[sender] = createPeerConnection(sender);
-  }
-
   const peerConnection = peers.current[sender];
 
-  // Handle offer
   if (offer) {
     try {
-      if (peerConnection.signalingState === "stable") {
-        // If signaling state is 'stable', set remote description and create an offer
+      // Check if the peer connection is in the 'have-remote-offer' state
+      if (peerConnection.signalingState === 'stable') {
         await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
         const localOffer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(localOffer);
-        socket.emit("signal", { room, target: sender, offer: localOffer });
+        socket.emit('signal', { room, target: sender, offer: localOffer });
       } else {
-        // Queue the offer if not in 'stable' state
-        offerQueue.current[sender] = offer;
-        console.warn("Offer queued due to signaling state: " + peerConnection.signalingState);
+        // Queue the offer if we're in the 'have-remote-offer' state
+        offerQueue[sender] = offer;
+        console.warn('Offer queued due to signaling state: ' + peerConnection.signalingState);
       }
     } catch (err) {
-      console.error("Error handling offer:", err);
+      console.error('Error handling offer:', err);
     }
   }
 
   // Handle answer
   else if (answer) {
     try {
-      if (peerConnection.signalingState === "have-remote-description") {
-        // If remote description is already set, set the local description with the answer
+      if (peerConnection.signalingState === 'have-remote-description') {
         await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
       } else {
-        console.warn("Ignoring answer due to incorrect signaling state.");
+        console.warn('Ignoring answer due to incorrect signaling state.');
       }
     } catch (err) {
-      console.error("Error handling answer: ", err);
+      console.error('Error handling answer:', err);
     }
   }
 
-  // Handle ICE candidate
+  // Handle ICE candidates
   else if (candidate) {
     try {
-      if (peerConnection.signalingState === "stable" || peerConnection.signalingState === "have-remote-description") {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-      } else {
-        iceCandidateQueue.current[sender] = iceCandidateQueue.current[sender] || [];
-        iceCandidateQueue.current[sender].push(candidate);
-        console.warn("ICE candidate queued, not in stable state.");
-      }
+      await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (err) {
-      console.error("Error handling ICE candidate: ", err);
+      console.error('Error handling ICE candidate:', err);
     }
   }
 });
 
-// When the signaling state becomes stable, process queued offers and ICE candidates
-socket.on("signaling-state-changed", async (data) => {
+// Monitor signaling state and process queued offers
+socket.on('signaling-state-changed', async (data) => {
   const { sender, state } = data;
+  const peerConnection = peers.current[sender];
 
-  if (state === "stable" && offerQueue.current[sender]) {
+  if (state === 'stable' && offerQueue[sender]) {
     try {
-      const offer = offerQueue.current[sender];
-      const peerConnection = peers.current[sender];
-      
-      // Process the queued offer when the connection is stable
+      // Process the queued offer once the state is stable
+      const offer = offerQueue[sender];
       await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
       const localOffer = await peerConnection.createOffer();
       await peerConnection.setLocalDescription(localOffer);
-      socket.emit("signal", { room, target: sender, offer: localOffer });
-      
+      socket.emit('signal', { room, target: sender, offer: localOffer });
+
       // Clear the offer from the queue
-      delete offerQueue.current[sender];
+      delete offerQueue[sender];
     } catch (err) {
-      console.error("Error processing queued offer:", err);
+      console.error('Error processing queued offer:', err);
     }
-  }
-
-  // Handle queued ICE candidates
-  if (state === "stable" && iceCandidateQueue.current[sender]) {
-    const peerConnection = peers.current[sender];
-
-    for (const candidate of iceCandidateQueue.current[sender]) {
-      try {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch (err) {
-        console.error("Error adding queued ICE candidate:", err);
-      }
-    }
-
-    // Clear the candidate queue after processing
-    delete iceCandidateQueue.current[sender];
   }
 });
-
-
-// When the signaling state becomes stable, process queued offers and ICE candidates
-socket.on("signaling-state-changed", async (data) => {
-  const { sender, state } = data;
-
-  if (state === "stable" && offerQueue.current[sender]) {
-    try {
-      const offer = offerQueue.current[sender];
-      const peerConnection = peers.current[sender];
-      
-      // Process the queued offer when the connection is stable
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-      const localOffer = await peerConnection.createOffer();
-      await peerConnection.setLocalDescription(localOffer);
-      socket.emit("signal", { room, target: sender, offer: localOffer });
-      
-      // Clear the offer from the queue
-      delete offerQueue.current[sender];
-    } catch (err) {
-      console.error("Error processing queued offer:", err);
-    }
-  }
-
-  // Handle queued ICE candidates
-  if (state === "stable" && iceCandidateQueue.current[sender]) {
-    const peerConnection = peers.current[sender];
-
-    for (const candidate of iceCandidateQueue.current[sender]) {
-      try {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch (err) {
-        console.error("Error adding queued ICE candidate:", err);
-      }
-    }
-
-    // Clear the candidate queue after processing
-    delete iceCandidateQueue.current[sender];
-  }
-});
-
 
     // Handle user leaving the room
     socket.on("user-left", (userId) => {
