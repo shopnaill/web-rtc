@@ -20,17 +20,12 @@ function VideoCall() {
   const localStream = useRef(null);
   const peers = useRef({});
   const dataChannels = useRef({});
+  const candidateQueue = useRef({});
 
   const configuration = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' }
-      // Add TURN servers here if needed for better connectivity
-      // { 
-      //   urls: 'turn:your-turn-server.com', 
-      //   username: 'your-username', 
-      //   credential: 'your-password' 
-      // }
     ]
   };
 
@@ -57,6 +52,7 @@ function VideoCall() {
   const createPeerConnection = useCallback((targetId) => {
     try {
       const peerConnection = new RTCPeerConnection(configuration);
+      candidateQueue.current[targetId] = [];
 
       // Add local tracks to the peer connection
       localStream.current?.getTracks().forEach((track) => {
@@ -75,7 +71,6 @@ function VideoCall() {
       
       dataChannel.onmessage = (event) => {
         console.log(`Message from ${targetId}:`, event.data);
-        // Handle received messages as needed
       };
       
       dataChannels.current[targetId] = dataChannel;
@@ -115,6 +110,24 @@ function VideoCall() {
           case "failed":
             setConnectionStatus("Disconnected");
             break;
+        }
+      };
+
+      // Signaling state change handling
+      peerConnection.onsignalingstatechange = async () => {
+        console.log(`Signaling state for ${targetId}: ${peerConnection.signalingState}`);
+        
+        // Process queued candidates when in stable state
+        if (peerConnection.signalingState === 'stable') {
+          const queuedCandidates = candidateQueue.current[targetId] || [];
+          for (const candidate of queuedCandidates) {
+            try {
+              await peerConnection.addIceCandidate(candidate);
+            } catch (error) {
+              console.error(`Error adding queued candidate for ${targetId}:`, error);
+            }
+          }
+          candidateQueue.current[targetId] = [];
         }
       };
 
@@ -166,6 +179,13 @@ function VideoCall() {
       // Ensure local stream is ready
       await setupLocalMedia();
 
+      // Reset previous connections
+      Object.values(peers.current).forEach(pc => pc.close());
+      peers.current = {};
+      dataChannels.current = {};
+      candidateQueue.current = {};
+      setRemoteStreams([]);
+
       // Connect to socket
       socket.connect();
       socket.emit("join-room", room);
@@ -183,6 +203,13 @@ function VideoCall() {
     try {
       // Ensure local stream is ready
       await setupLocalMedia();
+
+      // Reset previous connections
+      Object.values(peers.current).forEach(pc => pc.close());
+      peers.current = {};
+      dataChannels.current = {};
+      candidateQueue.current = {};
+      setRemoteStreams([]);
 
       // Connect to socket
       socket.connect();
@@ -265,13 +292,20 @@ function VideoCall() {
             return;
           }
 
-          // Add ICE candidate if remote description is set
+          // Queue or add ICE candidate based on connection state
+          const candidateObj = new RTCIceCandidate(candidate);
+          
           if (peerConnection.remoteDescription) {
-            await peerConnection.addIceCandidate(
-              new RTCIceCandidate(candidate)
-            );
+            try {
+              await peerConnection.addIceCandidate(candidateObj);
+            } catch (error) {
+              console.error(`Error adding ICE candidate for ${sender}:`, error);
+              // Queue the candidate if adding fails
+              candidateQueue.current[sender]?.push(candidateObj);
+            }
           } else {
-            console.warn(`Candidate received before remote description for ${sender}`);
+            console.warn(`Queuing candidate for ${sender}`);
+            candidateQueue.current[sender]?.push(candidateObj);
           }
         }
       } catch (error) {
@@ -286,6 +320,7 @@ function VideoCall() {
         peers.current[userId].close();
         delete peers.current[userId];
         delete dataChannels.current[userId];
+        delete candidateQueue.current[userId];
         
         // Remove remote stream for the left user
         setRemoteStreams((prevStreams) => 
@@ -310,61 +345,7 @@ function VideoCall() {
       socket.off("user-left", handleUserLeft);
     };
   }, [room, createPeerConnection, connectToPeer]);
-
-  // Toggle audio mute
-  const toggleAudio = useCallback(() => {
-    setIsMuted((prev) => {
-      const newMuteState = !prev;
-      localStream.current?.getAudioTracks().forEach((track) => {
-        track.enabled = !newMuteState;
-      });
-      return newMuteState;
-    });
-  }, []);
-
-  // Toggle video on/off
-  const toggleVideo = useCallback(() => {
-    setIsVideoOff((prev) => {
-      const newVideoState = !prev;
-      localStream.current?.getVideoTracks().forEach((track) => {
-        track.enabled = !newVideoState;
-      });
-      return newVideoState;
-    });
-  }, []);
-
-  // Send a message via data channel
-  const sendMessage = useCallback(() => {
-    // Send message to all connected peers
-    Object.entries(dataChannels.current).forEach(([peerId, channel]) => {
-      if (channel.readyState === 'open') {
-        channel.send(message);
-      }
-    });
-    setMessage("");
-  }, [message]);
-
-  // End the video call
-  const endCall = useCallback(() => {
-    // Close all peer connections
-    Object.values(peers.current).forEach((peerConnection) => {
-      peerConnection.close();
-    });
-
-    // Stop local media tracks
-    localStream.current?.getTracks().forEach((track) => track.stop());
-
-    // Reset state
-    setRemoteStreams([]);
-    peers.current = {};
-    dataChannels.current = {};
-    setConnectionStatus("Disconnected");
-
-    // Disconnect from socket
-    socket.emit("user-left", room);
-    socket.disconnect();
-  }, [room]);
-
+  
   return (
     <div className="video-call-container">
       <div className="connection-controls">
