@@ -54,21 +54,17 @@ socketNamespace.on("connection", (socket) => {
   
     // Handle disconnection
     socket.on("disconnect", () => {
-      console.log("User disconnected from /socket: ", socket.id);
-  
-      // Remove the user from all rooms they were part of
       for (const roomId in rooms) {
         rooms[roomId] = rooms[roomId].filter((id) => id !== socket.id);
-  
-        // Notify remaining users about the disconnection
         socket.to(roomId).emit("user-left", socket.id);
-  
-        // Delete room if empty
         if (rooms[roomId].length === 0) {
           delete rooms[roomId];
         }
       }
     });
+    
+
+
   });
   
 

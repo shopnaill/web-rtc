@@ -8,9 +8,12 @@ function VideoCall() {
   const [room, setRoom] = useState("");
   const [message, setMessage] = useState("");
   const [isDataChannelOpen, setIsDataChannelOpen] = useState(false);
-  const [remoteStreams, setRemoteStreams] = useState([]); // State for remote streams
+  const [remoteStreams, setRemoteStreams] = useState([]); 
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
+  
   const localVideo = useRef(null);
-  const peers = useRef({}); // To store peer connections
+  const peers = useRef({}); 
   const dataChannel = useRef(null);
 
   const joinRoom = () => {
@@ -22,21 +25,25 @@ function VideoCall() {
     setupWebRTC();
   };
 
+  const createRoom = () => {
+    const newRoom = Math.random().toString(36).substring(2, 7); // Generate random room ID
+    setRoom(newRoom);
+    socket.emit("join-room", newRoom);
+    setupWebRTC();
+  };
+
   const setupWebRTC = () => {
-    let localStream = null; // Use a regular variable
+    let localStream = null;
 
     const createPeerConnection = (targetId) => {
         const peerConnection = new RTCPeerConnection();
 
-        // Add local tracks to peer connection
         localStream?.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
 
-        // Handle incoming tracks (remote stream)
         peerConnection.ontrack = (event) => {
             setRemoteStreams((prevStreams) => [...prevStreams, event.streams[0]]);
         };
 
-        // ICE candidate handling
         peerConnection.onicecandidate = (event) => {
             if (event.candidate) {
                 socket.emit("signal", {
@@ -50,18 +57,16 @@ function VideoCall() {
         return peerConnection;
     };
 
-    // Access local media stream
     navigator.mediaDevices
-        .getUserMedia({ video: true, audio: true })
+        .getUserMedia({ video: !isVideoOff, audio: !isMuted })
         .then((stream) => {
-            localStream = stream; // Assign to the variable
+            localStream = stream;
             if (localVideo.current) {
                 localVideo.current.srcObject = stream;
             }
         })
         .catch((err) => console.error("Error accessing media devices:", err));
 
-    // Handle room users
     socket.on("room-users", (users) => {
         users.forEach(async (userId) => {
             const peerConnection = createPeerConnection(userId);
@@ -74,7 +79,6 @@ function VideoCall() {
         });
     });
 
-    // Handle user joining
     socket.on("user-joined", async (userId) => {
         const peerConnection = createPeerConnection(userId);
         peers.current[userId] = peerConnection;
@@ -85,46 +89,29 @@ function VideoCall() {
         socket.emit("signal", { room, target: userId, offer });
     });
 
-    // Handle signaling
     socket.on("signal", async (data) => {
         const { sender, offer, answer, candidate } = data;
-    
+
         if (!peers.current[sender]) {
             peers.current[sender] = createPeerConnection(sender);
         }
-    
+
         const peerConnection = peers.current[sender];
-    
+
         if (offer) {
-            // If we receive an offer, we should set the remote description only if it's not stable
-            // if (peerConnection.signalingState !== "stable") {
-            //     console.warn("Peer connection is not in a stable state, delaying remote description set.");
-            //     return; // Delay the offer processing if signaling state is not stable
-            // }
-    
             await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
             socket.emit("signal", { room, target: sender, answer });
         } else if (answer) {
-            // if (peerConnection.signalingState !== "stable") {
-            //     console.warn("Peer connection is not in a stable state, delaying remote description set.");
-            //     return; // Delay the answer processing if signaling state is not stable
-            // }
-    
             await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
         } else if (candidate) {
-            // ICE candidate handling: Add candidate only after the remote description is set
             if (peerConnection.signalingState === "stable") {
                 await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-            } else {
-                console.warn("Ignoring ICE candidate because remote description is not set yet.");
             }
         }
     });
-    
 
-    // Handle user leaving
     socket.on("user-left", (userId) => {
         if (peers.current[userId]) {
             peers.current[userId].close();
@@ -132,8 +119,7 @@ function VideoCall() {
         }
         console.log(`${userId} left the room`);
     });
-};
-
+  };
 
   const sendMessage = () => {
     if (isDataChannelOpen) {
@@ -145,7 +131,28 @@ function VideoCall() {
     }
   };
 
-  // Cleanup on component unmount
+  const toggleAudio = () => {
+    setIsMuted((prev) => !prev);
+    localVideo.current.srcObject.getAudioTracks().forEach((track) => {
+      track.enabled = !track.enabled;
+    });
+  };
+
+  const toggleVideo = () => {
+    setIsVideoOff((prev) => !prev);
+    localVideo.current.srcObject.getVideoTracks().forEach((track) => {
+      track.enabled = !track.enabled;
+    });
+  };
+
+  const endCall = () => {
+    socket.emit("user-left", room);
+    Object.values(peers.current).forEach((peerConnection) =>
+      peerConnection.close()
+    );
+    socket.disconnect();
+  };
+
   useEffect(() => {
     return () => {
       Object.values(peers.current).forEach((peerConnection) =>
@@ -158,6 +165,7 @@ function VideoCall() {
   return (
     <div>
       <div>
+        <button onClick={createRoom}>Create Room</button>
         <input
           type="text"
           value={room}
@@ -175,10 +183,16 @@ function VideoCall() {
             autoPlay
             playsInline
             ref={(el) => {
-              if (el) el.srcObject = stream; // Dynamically assign stream
+              if (el) el.srcObject = stream;
             }}
           />
         ))}
+      </div>
+
+      <div>
+        <button onClick={toggleAudio}>{isMuted ? "Unmute Audio" : "Mute Audio"}</button>
+        <button onClick={toggleVideo}>{isVideoOff ? "Turn On Video" : "Turn Off Video"}</button>
+        <button onClick={endCall}>End Call</button>
       </div>
 
       <div>
